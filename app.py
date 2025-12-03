@@ -2,7 +2,15 @@ from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 import google.generativeai as genai
 from gtts import gTTS
-import speech_recognition as sr
+try:
+    import speech_recognition as sr
+except ImportError as e:
+    print(f"SpeechRecognition import error: {e}")
+    # Create a dummy recognizer for fallback
+    class DummyRecognizer:
+        def recognize_google(self, *args, **kwargs):
+            return "Speech recognition not available"
+    sr = type('sr', (), {'Recognizer': DummyRecognizer})()
 import io
 import os
 import json
