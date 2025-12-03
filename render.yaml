@@ -12,4 +12,4 @@ services:
       - key: PYTHONUNBUFFERED
         value: true
       - key: PYTHON_VERSION
-        value: "3.11"
+        value: "3.12.7"
