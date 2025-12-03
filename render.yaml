@@ -1,15 +1,15 @@
 services:
   - type: web
-    name: voice-chatbot-free
+    name: voice-chatbot
     env: python
     region: oregon
     plan: free
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app
+    buildCommand: |
+      pip install --upgrade pip
+      pip install -r requirements.txt
+    startCommand: gunicorn app:app --timeout 120 --workers 1
     envVars:
       - key: GEMINI_API_KEY
         sync: false
       - key: PYTHONUNBUFFERED
         value: true
-      - key: PYTHON_VERSION
-        value: "3.11"

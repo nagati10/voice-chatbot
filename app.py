@@ -1,7 +1,6 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from google import genai  # NEW: Updated import
-from google.genai import types  # NEW: For config types
+import google.generativeai as genai  # Use this import for 0.3.2
 from gtts import gTTS
 import io
 import os
@@ -79,7 +78,7 @@ def transcribe_audio(audio_bytes):
         print(f"Transcription error: {e}")
         return "Error processing audio"
 
-# ========== AI RESPONSE (UPDATED) ==========
+# ========== AI RESPONSE (Simplified) ==========
 def get_ai_response(text, session_id="default"):
     """Get response from Gemini with conversation memory"""
     
@@ -99,27 +98,16 @@ User: {text}
 
 You are a helpful voice assistant. Respond conversationally in 1-3 sentences."""
     
-    # Call Gemini API using NEW SDK
+    # Call Gemini API - Simplified version
     try:
-        # Initialize client with API key
-        client = genai.Client(api_key=GEMINI_API_KEY)
+        # Configure Gemini
+        genai.configure(api_key=GEMINI_API_KEY)
         
-        # Create chat session with memory
-        if not hasattr(get_ai_response, "chats"):
-            get_ai_response.chats = {}
+        # Use gemini-pro model which is more widely available
+        model = genai.GenerativeModel('gemini-pro')
         
-        if session_id not in get_ai_response.chats:
-            get_ai_response.chats[session_id] = client.chats.create(
-                model="gemini-2.5-flash",
-                config=types.GenerateContentConfig(
-                    system_instruction="You are a helpful, friendly voice assistant. Keep responses conversational and brief (1-3 sentences).",
-                    temperature=0.7
-                )
-            )
-        
-        # Send message and get response
-        chat = get_ai_response.chats[session_id]
-        response = chat.send_message(text)
+        # Generate response
+        response = model.generate_content(prompt)
         ai_text = response.text.strip()
         
     except Exception as e:
@@ -154,7 +142,7 @@ def health():
         "status": "active",
         "free": True,
         "speech_recognition": SR_AVAILABLE,
-        "gemini_api": "2.5-flash",
+        "gemini_api": "gemini-pro",
         "timestamp": datetime.now().isoformat()
     })
 
@@ -243,10 +231,6 @@ def clear_history():
         conn.commit()
         conn.close()
         
-        # Clear chat session if exists
-        if hasattr(get_ai_response, "chats") and session_id in get_ai_response.chats:
-            del get_ai_response.chats[session_id]
-        
         return jsonify({
             "success": True,
             "message": "History cleared"
@@ -264,54 +248,101 @@ def index():
     <html>
     <head>
         <title>Voice AI Chatbot</title>
-        <meta http-equiv="refresh" content="0; url=/test">
-    </head>
-    <body>
-        <p>Redirecting to test page...</p>
-    </body>
-    </html>
-    """
-
-# Simple test page
-@app.route('/test')
-def test_page():
-    return """
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>Voice AI Test</title>
         <style>
-            body { font-family: Arial, sans-serif; padding: 20px; }
-            .container { max-width: 600px; margin: 0 auto; }
-            .btn { padding: 10px 20px; margin: 5px; background: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer; }
-            .btn:hover { background: #0056b3; }
-            .message { margin: 10px 0; padding: 10px; border-radius: 5px; }
-            .user { background: #e3f2fd; }
-            .ai { background: #f5f5f5; }
+            body {
+                font-family: Arial, sans-serif;
+                padding: 20px;
+                max-width: 800px;
+                margin: 0 auto;
+                background: #f5f5f5;
+            }
+            .container {
+                background: white;
+                padding: 30px;
+                border-radius: 10px;
+                box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            }
+            h1 { color: #333; }
+            .status { 
+                background: #e8f5e9;
+                padding: 15px;
+                border-radius: 5px;
+                margin: 20px 0;
+            }
+            .endpoint {
+                background: #f5f5f5;
+                padding: 10px;
+                margin: 10px 0;
+                border-left: 3px solid #2196F3;
+                font-family: 'Courier New', monospace;
+            }
         </style>
     </head>
     <body>
         <div class="container">
-            <h1>Voice AI Test Page</h1>
-            <button class="btn" onclick="testText()">Test Text Chat</button>
-            <div id="result"></div>
+            <h1>🎤 Voice Chatbot Backend</h1>
+            
+            <div class="status">
+                <p><strong>Status:</strong> ✅ Active</p>
+                <p><strong>Cost:</strong> $0/month (Free Forever)</p>
+                <p><strong>Speech Recognition:</strong> Available</p>
+            </div>
+            
+            <h2>API Endpoints</h2>
+            <div class="endpoint">
+                <strong>POST</strong> /api/voice-chat
+                <br><small>Process voice message (audio → text → AI → audio)</small>
+            </div>
+            <div class="endpoint">
+                <strong>POST</strong> /api/text-chat
+                <br><small>Text-only chat with AI</small>
+            </div>
+            <div class="endpoint">
+                <strong>POST</strong> /api/clear-history
+                <br><small>Clear conversation history for a session</small>
+            </div>
+            <div class="endpoint">
+                <strong>GET</strong> /health
+                <br><small>Health check and status</small>
+            </div>
+            
+            <h3>Test the API:</h3>
+            <button onclick="testAPI()">Test Text Chat</button>
+            <div id="testResult"></div>
+            
+            <script>
+                async function testAPI() {
+                    const result = document.getElementById('testResult');
+                    result.innerHTML = 'Testing...';
+                    
+                    try {
+                        const response = await fetch('/api/text-chat', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                            },
+                            body: JSON.stringify({
+                                text: 'Hello! Are you working?',
+                                session_id: 'test'
+                            })
+                        });
+                        
+                        const data = await response.json();
+                        if (data.success) {
+                            result.innerHTML = `<strong>✅ Success!</strong> AI: ${data.ai_response}`;
+                        } else {
+                            result.innerHTML = `<strong>❌ Error:</strong> ${data.error}`;
+                        }
+                    } catch (error) {
+                        result.innerHTML = `<strong>❌ Network Error:</strong> ${error.message}`;
+                    }
+                }
+            </script>
         </div>
-        <script>
-            async function testText() {
-                const response = await fetch('/api/text-chat', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ text: 'Hello!', session_id: 'test' })
-                });
-                const data = await response.json();
-                document.getElementById('result').innerHTML = 
-                    `<div class="message ai"><strong>AI:</strong> ${data.ai_response}</div>`;
-            }
-        </script>
     </body>
     </html>
     """
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=True)
+    app.run(host='0.0.0.0', port=port, debug=False)
