@@ -1,29 +1,27 @@
-from flask import Flask, request, jsonify, send_file
+from flask import Flask, request, jsonify
 from flask_cors import CORS
 import google.generativeai as genai
 from gtts import gTTS
-try:
-    import speech_recognition as sr
-except ImportError as e:
-    print(f"SpeechRecognition import error: {e}")
-    # Create a dummy recognizer for fallback
-    class DummyRecognizer:
-        def recognize_google(self, *args, **kwargs):
-            return "Speech recognition not available"
-    sr = type('sr', (), {'Recognizer': DummyRecognizer})()
 import io
 import os
 import json
 from datetime import datetime
 import sqlite3
-import hashlib
 import base64
+
+# Handle SpeechRecognition import with fallback
+try:
+    import speech_recognition as sr
+    SR_AVAILABLE = True
+except Exception as e:
+    print(f"SpeechRecognition not available: {e}")
+    SR_AVAILABLE = False
 
 app = Flask(__name__)
 CORS(app)
 
 # ========== FREE FOREVER CONFIG ==========
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")  # Free from Google AI Studio
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 DATABASE_FILE = "conversations.db"
 
 # Initialize conversation memory
@@ -38,7 +36,7 @@ def init_db():
 
 init_db()
 
-# ========== SIMPLE CONVERSATION MEMORY ==========
+# ========== CONVERSATION MEMORY ==========
 def save_conversation(session_id, user_input, ai_response):
     conn = sqlite3.connect(DATABASE_FILE)
     c = conn.cursor()
@@ -58,21 +56,26 @@ def get_conversation_history(session_id, limit=5):
 
 # ========== SPEECH-TO-TEXT ==========
 def transcribe_audio(audio_bytes):
-    """Simple, reliable STT using Google Speech Recognition"""
-    r = sr.Recognizer()
-    
-    # Convert bytes to AudioData
-    audio_data = sr.AudioData(audio_bytes, sample_rate=16000, sample_width=2)
+    """Speech-to-text using Google Speech Recognition"""
+    if not SR_AVAILABLE:
+        return "Speech recognition is temporarily unavailable"
     
     try:
-        # Google Web Speech API - FREE, no key needed
+        r = sr.Recognizer()
+        # Convert bytes to AudioData (16kHz, 16-bit)
+        audio_data = sr.AudioData(audio_bytes, sample_rate=16000, sample_width=2)
+        
+        # Google Web Speech API - FREE
         text = r.recognize_google(audio_data)
         return text
     except sr.UnknownValueError:
         return "I couldn't understand the audio"
-    except sr.RequestError:
-        # Fallback: Return placeholder
-        return "Hello, how can I help you?"
+    except sr.RequestError as e:
+        print(f"Speech recognition error: {e}")
+        return "Speech service temporarily unavailable"
+    except Exception as e:
+        print(f"Transcription error: {e}")
+        return "Error processing audio"
 
 # ========== AI RESPONSE ==========
 def get_ai_response(text, session_id="default"):
@@ -83,27 +86,25 @@ def get_ai_response(text, session_id="default"):
     
     # Build context from history
     context = ""
-    for user_msg, ai_msg in reversed(history):  # Most recent first
-        context += f"User: {user_msg}\nAI: {ai_msg}\n"
+    for user_msg, ai_msg in reversed(history):
+        context += f"User: {user_msg}\nAssistant: {ai_msg}\n"
     
     # Combine with current input
-    prompt = f"""
-    Previous conversation:
-    {context}
+    prompt = f"""Previous conversation:
+{context}
+
+User: {text}
+
+You are a helpful voice assistant. Respond conversationally in 1-3 sentences."""
     
-    User: {text}
-    
-    You are a helpful voice assistant. Respond conversationally in 1-2 sentences.
-    """
-    
-    # Call Gemini API (FREE tier)
-    genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel('gemini-pro')
-    
+    # Call Gemini API
     try:
+        genai.configure(api_key=GEMINI_API_KEY)
+        model = genai.GenerativeModel('gemini-1.5-flash')
         response = model.generate_content(prompt)
         ai_text = response.text.strip()
     except Exception as e:
+        print(f"Gemini API error: {e}")
         ai_text = "I'm here to help! What would you like to know?"
     
     # Save to memory
@@ -114,28 +115,40 @@ def get_ai_response(text, session_id="default"):
 # ========== TEXT-TO-SPEECH ==========
 def text_to_speech(text):
     """Convert text to speech using gTTS (FREE)"""
-    tts = gTTS(text=text, lang='en', slow=False)
-    
-    # Save to bytes
-    audio_buffer = io.BytesIO()
-    tts.write_to_fp(audio_buffer)
-    audio_buffer.seek(0)
-    
-    return audio_buffer.read()
+    try:
+        tts = gTTS(text=text, lang='en', slow=False)
+        audio_buffer = io.BytesIO()
+        tts.write_to_fp(audio_buffer)
+        audio_buffer.seek(0)
+        return audio_buffer.read()
+    except Exception as e:
+        print(f"TTS error: {e}")
+        # Return empty audio on error
+        return b''
 
 # ========== API ENDPOINTS ==========
 @app.route('/health', methods=['GET'])
 def health():
-    return jsonify({"status": "active", "free": True})
+    return jsonify({
+        "status": "active",
+        "free": True,
+        "speech_recognition": SR_AVAILABLE,
+        "timestamp": datetime.now().isoformat()
+    })
 
 @app.route('/api/voice-chat', methods=['POST'])
 def voice_chat():
     """Main endpoint - process voice to voice"""
     try:
-        # Get data from request
         data = request.json
         audio_base64 = data.get('audio')
         session_id = data.get('session_id', 'default_session')
+        
+        if not audio_base64:
+            return jsonify({
+                "success": False,
+                "error": "No audio data provided"
+            }), 400
         
         # Convert base64 to bytes
         audio_bytes = base64.b64decode(audio_base64)
@@ -159,6 +172,7 @@ def voice_chat():
         })
         
     except Exception as e:
+        print(f"Voice chat error: {e}")
         return jsonify({
             "success": False,
             "error": str(e),
@@ -168,33 +182,128 @@ def voice_chat():
 @app.route('/api/text-chat', methods=['POST'])
 def text_chat():
     """Text-only endpoint"""
-    data = request.json
-    text = data.get('text')
-    session_id = data.get('session_id', 'default_session')
-    
-    ai_response = get_ai_response(text, session_id)
-    
-    return jsonify({
-        "success": True,
-        "ai_response": ai_response
-    })
+    try:
+        data = request.json
+        text = data.get('text')
+        session_id = data.get('session_id', 'default_session')
+        
+        if not text:
+            return jsonify({
+                "success": False,
+                "error": "No text provided"
+            }), 400
+        
+        ai_response = get_ai_response(text, session_id)
+        
+        return jsonify({
+            "success": True,
+            "ai_response": ai_response,
+            "session_id": session_id
+        })
+    except Exception as e:
+        print(f"Text chat error: {e}")
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
 
-# Simple web interface for testing
+@app.route('/api/clear-history', methods=['POST'])
+def clear_history():
+    """Clear conversation history for a session"""
+    try:
+        data = request.json
+        session_id = data.get('session_id', 'default_session')
+        
+        conn = sqlite3.connect(DATABASE_FILE)
+        c = conn.cursor()
+        c.execute("DELETE FROM conversations WHERE session_id=?", (session_id,))
+        conn.commit()
+        conn.close()
+        
+        return jsonify({
+            "success": True,
+            "message": "History cleared"
+        })
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+# Web interface for testing
 @app.route('/')
 def index():
-    return """
+    sr_status = "✅ Available" if SR_AVAILABLE else "⚠️ Unavailable (text mode only)"
+    
+    return f"""
+    <!DOCTYPE html>
     <html>
-    <body style="font-family: Arial; padding: 20px;">
-        <h1>🎤 Voice Chatbot Backend</h1>
-        <p><strong>Status:</strong> ✅ Active</p>
-        <p><strong>Cost:</strong> $0/month (Free Forever)</p>
-        <p><strong>Endpoints:</strong></p>
-        <ul>
-            <li>POST /api/voice-chat - Process voice message</li>
-            <li>POST /api/text-chat - Text chat</li>
-            <li>GET /health - Health check</li>
-        </ul>
-        <p><em>Ready for iOS/Android apps</em></p>
+    <head>
+        <title>Voice Chatbot Backend</title>
+        <style>
+            body {{
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+                padding: 40px;
+                max-width: 800px;
+                margin: 0 auto;
+                background: #f5f5f5;
+            }}
+            .container {{
+                background: white;
+                padding: 30px;
+                border-radius: 10px;
+                box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            }}
+            h1 {{ color: #333; }}
+            .status {{ 
+                background: #e8f5e9;
+                padding: 15px;
+                border-radius: 5px;
+                margin: 20px 0;
+            }}
+            .endpoint {{
+                background: #f5f5f5;
+                padding: 10px;
+                margin: 10px 0;
+                border-left: 3px solid #2196F3;
+                font-family: 'Courier New', monospace;
+            }}
+            .method {{ 
+                color: #2196F3;
+                font-weight: bold;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>🎤 Voice Chatbot Backend</h1>
+            
+            <div class="status">
+                <p><strong>Status:</strong> ✅ Active</p>
+                <p><strong>Cost:</strong> $0/month (Free Forever)</p>
+                <p><strong>Speech Recognition:</strong> {sr_status}</p>
+            </div>
+            
+            <h2>API Endpoints</h2>
+            <div class="endpoint">
+                <span class="method">POST</span> /api/voice-chat
+                <br><small>Process voice message (audio → text → AI → audio)</small>
+            </div>
+            <div class="endpoint">
+                <span class="method">POST</span> /api/text-chat
+                <br><small>Text-only chat with AI</small>
+            </div>
+            <div class="endpoint">
+                <span class="method">POST</span> /api/clear-history
+                <br><small>Clear conversation history for a session</small>
+            </div>
+            <div class="endpoint">
+                <span class="method">GET</span> /health
+                <br><small>Health check and status</small>
+            </div>
+            
+            <p><em>Ready for iOS/Android/Web apps</em></p>
+        </div>
     </body>
     </html>
     """
