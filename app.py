@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from google import genai
+from google.genai import types
 from gtts import gTTS
 import io
 import os
@@ -9,19 +10,7 @@ import sqlite3
 import base64
 from pydub import AudioSegment
 import tempfile
-from langdetect import detect, detect_langs, DetectorFactory
-
-# Set seed for consistent language detection
-DetectorFactory.seed = 0
-
-# Handle SpeechRecognition import with fallback
-try:
-    import speech_recognition as sr
-    SR_AVAILABLE = True
-    print("✅ SpeechRecognition 3.14.4 is available")
-except Exception as e:
-    print(f"⚠️ SpeechRecognition not available: {e}")
-    SR_AVAILABLE = False
+import json
 
 app = Flask(__name__)
 CORS(app)
@@ -41,32 +30,19 @@ LANGUAGE_MAPPING = {
     'ru': 'ru',      # Russian
     'ja': 'ja',      # Japanese
     'ko': 'ko',      # Korean
+    'zh': 'zh',      # Chinese
     'zh-cn': 'zh',   # Chinese Simplified
     'zh-tw': 'zh-tw', # Chinese Traditional
     'ar': 'ar',      # Arabic
     'hi': 'hi',      # Hindi
 }
 
-# Speech recognition languages
-SPEECH_LANGUAGES = {
-    'en': 'en-US',
-    'es': 'es-ES',
-    'fr': 'fr-FR',
-    'de': 'de-DE',
-    'it': 'it-IT',
-    'pt': 'pt-PT',
-    'ru': 'ru-RU',
-    'ja': 'ja-JP',
-    'ko': 'ko-KR',
-    'zh': 'zh-CN',
-    'ar': 'ar-SA',
-    'hi': 'hi-IN',
-}
-
 if not GEMINI_API_KEY:
     print("⚠️ WARNING: GEMINI_API_KEY not set!")
 else:
     print("✅ GEMINI_API_KEY is configured")
+    # Initialize Gemini client
+    client = genai.Client(api_key=GEMINI_API_KEY)
 
 # Initialize database
 def init_db():
@@ -80,40 +56,19 @@ def init_db():
 
 init_db()
 
-# ========== LANGUAGE DETECTION ==========
-def detect_language_text(text):
-    """Detect language from text"""
-    try:
-        if not text or len(text.strip()) < 3:
-            return 'en'  # Default to English for short text
-        
-        detected = detect(text)
-        
-        # Map to our supported language codes
-        if detected in LANGUAGE_MAPPING:
-            return LANGUAGE_MAPPING[detected]
-        elif detected.split('-')[0] in LANGUAGE_MAPPING:
-            return LANGUAGE_MAPPING[detected.split('-')[0]]
-        
-        return 'en'  # Default fallback
-    except Exception as e:
-        print(f"⚠️ Language detection error: {e}")
-        return 'en'
-
 # ========== AUDIO PREPROCESSING ==========
-def preprocess_audio(audio_bytes, target_format='wav'):
-    """Preprocess audio data to improve recognition rate"""
+def preprocess_audio(audio_bytes):
+    """Convert WebM to MP3 for Gemini"""
     try:
         print(f"🎵 Preprocessing audio: {len(audio_bytes)} bytes")
         
-        # Method 1: Try using pydub conversion
+        # Create temporary file
+        with tempfile.NamedTemporaryFile(suffix='.webm', delete=False) as tmp:
+            tmp.write(audio_bytes)
+            tmp_path = tmp.name
+        
         try:
-            # Create temporary file
-            with tempfile.NamedTemporaryFile(suffix='.webm', delete=False) as tmp:
-                tmp.write(audio_bytes)
-                tmp_path = tmp.name
-            
-            # Load and convert with pydub
+            # Load WebM with pydub
             audio = AudioSegment.from_file(tmp_path, format="webm")
             
             # Convert to mono
@@ -122,29 +77,169 @@ def preprocess_audio(audio_bytes, target_format='wav'):
             # Normalize volume
             audio = audio.normalize()
             
-            # Convert to 16kHz sample rate (Speech Recognition recommendation)
-            audio = audio.set_frame_rate(16000)
-            
-            # Export as wav
+            # Convert to MP3 (Gemini supports MP3)
             output = io.BytesIO()
-            audio.export(output, format="wav")
+            audio.export(output, format="mp3", parameters=["-ar", "16000"])
             processed_bytes = output.getvalue()
             
-            print(f"✅ Audio preprocessed: {len(processed_bytes)} bytes")
+            print(f"✅ Converted to MP3: {len(processed_bytes)} bytes")
             
-            # Clean up temporary file
+            # Clean up
             os.unlink(tmp_path)
             
-            return processed_bytes
+            return processed_bytes, "audio/mp3"
             
         except Exception as e:
-            print(f"⚠️ Pydub preprocessing failed: {e}")
-            # If pydub fails, return original audio
-            return audio_bytes
+            print(f"⚠️ Pydub conversion failed: {e}")
+            # Try to use as-is
+            os.unlink(tmp_path)
+            return audio_bytes, "audio/webm"
             
     except Exception as e:
         print(f"❌ Audio preprocessing error: {e}")
-        return audio_bytes
+        return audio_bytes, "audio/webm"
+
+
+# In your Flask backend, update the transcribe_with_gemini function:
+
+def transcribe_with_gemini(audio_bytes, mime_type="audio/mp3"):
+    """Transcribe speech to text using Gemini 2.5 Flash"""
+    if not GEMINI_API_KEY:
+        return "AI service is not configured.", "en"
+    
+    try:
+        print(f"🎤 Transcribing with Gemini ({len(audio_bytes)} bytes, {mime_type})...")
+        
+        # Create prompt for transcription with language detection
+        # UPDATED: More specific prompt for better Arabic support
+        prompt = """Please transcribe this speech to text. 
+        
+        IMPORTANT: 
+        1. Detect the language of the speech (especially if it's Arabic, Chinese, etc.)
+        2. If you hear Arabic speech, transcribe it carefully with Arabic script
+        3. Provide ONLY a JSON response with this exact format:
+        {
+            "text": "the transcribed text here",
+            "language": "language code (e.g., en, es, fr, ar)",
+            "confidence": 0.95
+        }
+        
+        If you cannot understand the audio, return:
+        {
+            "text": "",
+            "language": "unknown",
+            "confidence": 0.0
+        }"""
+        
+        # Send to Gemini
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=[
+                prompt,
+                types.Part.from_bytes(
+                    data=audio_bytes,
+                    mime_type=mime_type,
+                )
+            ],
+            config=types.GenerateContentConfig(
+                temperature=0.1,  # Low temperature for accurate transcription
+                max_output_tokens=100
+            )
+        )
+        
+        # Parse the response
+        result_text = response.text.strip()
+        print(f"📝 Gemini raw response: {result_text}")
+        
+        # Try to parse as JSON
+        try:
+            # Extract JSON from response (Gemini might add markdown)
+            if result_text.startswith("```json"):
+                result_text = result_text[7:-3]  # Remove ```json and ```
+            elif result_text.startswith("```"):
+                result_text = result_text[3:-3]  # Remove ``` and ```
+            
+            result = json.loads(result_text)
+            
+            text = result.get("text", "")
+            language = result.get("language", "en")
+            confidence = result.get("confidence", 0)
+            
+            # LOWER CONFIDENCE THRESHOLD for Arabic/other languages
+            if confidence > 0.1 or language == 'ar':  # Lowered from 0.3 to 0.1
+                print(f"✅ Transcribed ({language}, confidence: {confidence}): {text}")
+                return text, language
+            else:
+                print(f"⚠️ Low confidence transcription: {text}")
+                # Try to manually detect language from text
+                if text:
+                    detected_lang = detect_language_from_text(text)
+                    return text, detected_lang
+                return "I couldn't understand clearly. Please try again.", "en"
+                
+        except json.JSONDecodeError:
+            # If not JSON, use raw text
+            print(f"⚠️ Could not parse JSON, using raw text: {result_text}")
+            # Try to detect language from text
+            language = detect_language_from_text(result_text)
+            return result_text, language
+            
+    except Exception as e:
+        print(f"❌ Gemini transcription error: {e}")
+        import traceback
+        traceback.print_exc()
+        return "Error processing audio with AI. Please try again.", "en"
+
+
+# ========== SIMPLE LANGUAGE DETECTION ==========
+def detect_language_from_text(text):
+    """Simple language detection from text patterns"""
+    if not text:
+        return 'en'
+    
+    text_lower = text.lower()
+    
+    # Check for Arabic characters (more comprehensive range)
+    arabic_range = '\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF'
+    if any(c for c in text if c in arabic_range):
+        return 'ar'
+    
+    # Check for Chinese characters
+    if any('\u4e00' <= c <= '\u9fff' for c in text):
+        return 'zh'
+    
+    # Check for Japanese characters
+    japanese_ranges = [
+        '\u3040-\u309F',  # Hiragana
+        '\u30A0-\u30FF',  # Katakana
+        '\u4E00-\u9FAF',  # Kanji
+    ]
+    for jp_range in japanese_ranges:
+        if any(c for c in text if c in jp_range):
+            return 'ja'
+    
+    # Check for Korean characters
+    if any('\uAC00' <= c <= '\uD7A3' for c in text):
+        return 'ko'
+    
+    # Check for common phrases in various languages
+    language_patterns = {
+        'es': ['hola', 'gracias', 'sí', 'no', 'por favor', 'cómo', 'qué'],
+        'fr': ['bonjour', 'merci', 'oui', 'non', 's\'il vous plaît', 'comment'],
+        'de': ['hallo', 'danke', 'ja', 'nein', 'bitte', 'wie'],
+        'it': ['ciao', 'grazie', 'sì', 'no', 'per favore', 'come'],
+        'ru': ['привет', 'спасибо', 'да', 'нет', 'пожалуйста', 'как'],
+        'ar': ['مرحبا', 'شكرا', 'نعم', 'لا', 'من فضلك', 'كيف'],
+        'hi': ['नमस्ते', 'धन्यवाद', 'हाँ', 'नहीं', 'कृपया', 'कैसे'],
+    }
+    
+    for lang_code, patterns in language_patterns.items():
+        for pattern in patterns:
+            if pattern in text_lower:
+                return lang_code
+    
+    # Default to English
+    return 'en'
 
 # ========== CONVERSATION MEMORY ==========
 def save_conversation(session_id, user_input, ai_response, language='en'):
@@ -171,83 +266,9 @@ def get_conversation_history(session_id, limit=5):
         print(f"Database error: {e}")
         return []
 
-# ========== SPEECH-TO-TEXT ==========
-def transcribe_audio(audio_bytes, language_hint='en-US'):
-    """Speech-to-text using Google Speech Recognition"""
-    if not SR_AVAILABLE:
-        return "Speech recognition is temporarily unavailable. Please use text mode."
-    
-    try:
-        r = sr.Recognizer()
-        
-        print(f"🔊 Audio bytes length: {len(audio_bytes)}")
-        
-        # Try different sample rates
-        sample_rates = [16000, 44100, 48000]
-        
-        for sample_rate in sample_rates:
-            try:
-                print(f"🔄 Trying sample rate: {sample_rate} Hz")
-                
-                # Try different byte widths
-                for sample_width in [2, 4]:  # 16-bit or 32-bit
-                    try:
-                        audio_data = sr.AudioData(audio_bytes, 
-                                                 sample_rate=sample_rate, 
-                                                 sample_width=sample_width)
-                        
-                        # Adjust recognizer settings
-                        r.energy_threshold = 300  # Lower energy threshold
-                        r.dynamic_energy_threshold = True
-                        r.pause_threshold = 0.8   # Reduce pause threshold
-                        
-                        # Try recognition
-                        text = r.recognize_google(audio_data, 
-                                                 language=language_hint,
-                                                 show_all=False)
-                        
-                        if text and len(text.strip()) > 0:
-                            print(f"✅ Transcribed ({sample_rate}Hz, {sample_width} bytes): {text}")
-                            return text
-                            
-                    except Exception as e:
-                        print(f"⚠️ Try {sample_rate}Hz/{sample_width} failed: {e}")
-                        continue
-                        
-            except Exception as e:
-                print(f"⚠️ Sample rate {sample_rate} failed: {e}")
-                continue
-        
-        # If all attempts fail with specific language, try auto-detect
-        if language_hint != 'en-US':
-            print("🔄 Trying auto-detect as fallback...")
-            try:
-                audio_data = sr.AudioData(audio_bytes, sample_rate=16000, sample_width=2)
-                text = r.recognize_google(audio_data, language=None)
-                if text and len(text.strip()) > 0:
-                    print(f"✅ Transcribed (auto-detect): {text}")
-                    return text
-            except:
-                pass
-        
-        print("❌ All transcription attempts failed")
-        return "I couldn't understand the audio. Please try speaking more clearly."
-        
-    except sr.UnknownValueError:
-        print("⚠️ Speech recognition could not understand audio")
-        return "I couldn't understand the audio. Please try speaking more clearly."
-    except sr.RequestError as e:
-        print(f"❌ Speech recognition service error: {e}")
-        return "Speech service is temporarily unavailable. Please try again."
-    except Exception as e:
-        print(f"❌ Transcription error: {e}")
-        import traceback
-        traceback.print_exc()
-        return "Error processing audio. Please try again."
-
 # ========== AI RESPONSE ==========
 def get_ai_response(text, session_id="default", language='en'):
-    """Get response from Gemini 2.5 Flash with conversation memory"""
+    """Get response from Gemini 2.5 Flash"""
     
     if not GEMINI_API_KEY:
         return "AI service is not configured. Please set GEMINI_API_KEY environment variable.", language
@@ -262,42 +283,70 @@ def get_ai_response(text, session_id="default", language='en'):
             context += f"User: {user_msg}\nAssistant: {ai_msg}\n"
         context += "\n"
     
-    # Add language instruction if not English
-    language_instruction = ""
-    if language != 'en':
-        language_instruction = f"\nPlease respond in {language} language."
+    # Language-specific instructions
+    language_prompts = {
+        'en': "Respond conversationally in 1-3 sentences as a helpful voice assistant.",
+        'es': "Responde de manera conversacional en 1-3 frases como un asistente de voz útil.",
+        'fr': "Répondez de manière conversationnelle en 1-3 phrases comme un assistant vocal utile.",
+        'ar': "رد بطريقة محادثة في 1-3 جملة كمساعد صوتي مفيد.",
+        'de': "Antworten Sie konversationell in 1-3 Sätzen als hilfreicher Sprachassistent.",
+        'it': "Rispondi conversazionalmente in 1-3 frasi come un assistente vocale utile.",
+        'ja': "役立つ音声アシスタントとして、1〜3文で会話形式で答えてください。",
+        'ko': "유용한 음성 비서로서 1~3문장으로 대화식으로 응답하세요.",
+        'zh': "以有用的语音助手身份，用1-3句话进行对话式回答。",
+        'hi': "एक मददगार आवाज सहायक के रूप में 1-3 वाक्यों में बातचीत के तरीके से जवाब दें।",
+        'ru': "Отвечайте разговорным тоном в 1-3 предложениях в качестве полезного голосового помощника.",
+        'pt': "Responda conversacionalmente em 1-3 frases como um assistente de voz útil.",
+    }
+    
+    instruction = language_prompts.get(language, language_prompts['en'])
     
     # Combine with current input
     full_prompt = f"""{context}User: {text}
 
-Respond conversationally in 1-3 sentences as a helpful voice assistant.{language_instruction}"""
+{instruction}
+
+IMPORTANT: Respond ONLY in {language} language."""
     
-    # Call Gemini API using new SDK
     try:
-        # Initialize client
-        client = genai.Client(api_key=GEMINI_API_KEY)
-        
-        # Generate content with Gemini 2.5 Flash
+        # Generate content with Gemini
         response = client.models.generate_content(
             model="gemini-2.5-flash",
-            contents=full_prompt
+            contents=full_prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.7,
+                max_output_tokens=150
+            )
         )
         
         # Extract text from response
         if response and response.text:
             ai_text = response.text.strip()
-            print(f"✅ Gemini 2.5 response ({language}): {ai_text[:50]}...")
+            print(f"✅ Gemini response ({language}): {ai_text[:100]}...")
         else:
             print("⚠️ Empty response from Gemini")
             ai_text = "I heard you, but I'm having trouble responding right now. Could you rephrase that?"
         
     except Exception as e:
         print(f"❌ Gemini API error: {e}")
-        print(f"Error type: {type(e).__name__}")
-        print(f"Error details: {str(e)}")
         
-        # Fallback response
-        ai_text = "I'm having trouble connecting to my AI service right now. Please try again in a moment."
+        # Fallback responses
+        fallback_responses = {
+            'en': "I'm having trouble connecting to my AI service right now. Please try again in a moment.",
+            'es': "Estoy teniendo problemas para conectarme a mi servicio de IA en este momento. Por favor, inténtalo de nuevo en un momento.",
+            'fr': "J'ai du mal à me connecter à mon service d'IA pour le moment. Veuillez réessayer dans un instant.",
+            'ar': "أواجه صعوبة في الاتصال بخدمة الذكاء الاصطناعي الخاصة بي في الوقت الحالي. يرجى المحاولة مرة أخرى في لحظة.",
+            'de': "Ich habe gerade Probleme, mich mit meinem KI-Dienst zu verbinden. Bitte versuchen Sie es in einem Moment erneut.",
+            'ja': "現在、AIサービスに接続するのに問題が発生しています。しばらくしてからもう一度お試しください。",
+            'ko': "현재 AI 서비스에 연결하는 데 문제가 있습니다. 잠시 후 다시 시도해 주세요.",
+            'zh': "我目前连接AI服务时遇到问题。请稍后再试。",
+            'hi': "मुझे अभी अपनी AI सेवा से कनेक्ट होने में परेशानी हो रही है। कृपया एक पल में फिर से प्रयास करें।",
+            'ru': "У меня возникли проблемы с подключением к моему сервису ИИ. Пожалуйста, попробуйте еще раз через мгновение.",
+            'pt': "Estou tendo problemas para me conectar ao meu serviço de IA no momento. Por favor, tente novamente em um momento.",
+            'it': "Sto avendo problemi a connettermi al mio servizio di IA in questo momento. Per favore, riprova tra un momento.",
+        }
+        
+        ai_text = fallback_responses.get(language, fallback_responses['en'])
     
     # Save to memory
     save_conversation(session_id, text, ai_text, language)
@@ -310,8 +359,6 @@ def text_to_speech(text, language='en'):
     try:
         # Map language code
         tts_lang = LANGUAGE_MAPPING.get(language, 'en')
-        if language.startswith('zh'):
-            tts_lang = language  # Keep zh-cn or zh-tw
         
         tts = gTTS(text=text, lang=tts_lang, slow=False)
         audio_buffer = io.BytesIO()
@@ -343,19 +390,19 @@ def health():
     return jsonify({
         "status": "active",
         "free": True,
-        "speech_recognition": SR_AVAILABLE,
-        "speech_recognition_version": "3.14.4",
         "gemini_api": "gemini-2.5-flash",
         "gemini_configured": bool(GEMINI_API_KEY),
         "multilingual": True,
         "supported_languages": list(LANGUAGE_MAPPING.keys()),
+        "audio_support": True,
+        "speech_recognition": "Gemini-native",
         "python_version": f"{os.sys.version_info.major}.{os.sys.version_info.minor}.{os.sys.version_info.micro}",
         "timestamp": datetime.now().isoformat()
     })
 
 @app.route('/api/voice-chat', methods=['POST'])
 def voice_chat():
-    """Main endpoint - process voice to voice"""
+    """Main endpoint - process voice to voice using Gemini"""
     try:
         data = request.json
         
@@ -364,7 +411,6 @@ def voice_chat():
         
         audio_base64 = data.get('audio')
         session_id = data.get('session_id', 'default_session')
-        language_hint = data.get('language_hint', 'en')  # Default to English
         
         if not audio_base64:
             return jsonify({"success": False, "error": "No audio data provided"}), 400
@@ -378,44 +424,33 @@ def voice_chat():
         except Exception as e:
             return jsonify({"success": False, "error": f"Invalid base64 audio: {str(e)}"}), 400
         
-        # Preprocess audio to improve recognition
+        # Preprocess audio (convert WebM to MP3)
         print("🎵 Preprocessing audio...")
-        audio_bytes = preprocess_audio(audio_bytes)
+        processed_audio, mime_type = preprocess_audio(audio_bytes)
         
-        # Get speech recognition language code
-        speech_lang = SPEECH_LANGUAGES.get(language_hint, 'en-US')
-        
-        # Step 1: Speech to Text
-        print(f"🎤 Step 1: Transcribing audio (language hint: {language_hint})...")
-        user_text = transcribe_audio(audio_bytes, speech_lang)
+        # Step 1: Transcribe with Gemini (includes language detection)
+        print("🎤 Step 1: Transcribing with Gemini...")
+        user_text, detected_language = transcribe_with_gemini(processed_audio, mime_type)
         
         # Check transcription result
-        error_phrases = ["Speech recognition", "Error processing", "I couldn't understand", "service is temporarily"]
+        error_phrases = ["I couldn't understand", "Error processing", "Please try speaking"]
         if any(phrase in user_text for phrase in error_phrases):
             return jsonify({
                 "success": False, 
                 "error": user_text, 
                 "user_text": user_text,
-                "debug": "Transcription failed"
+                "detected_language": detected_language
             }), 400
         
-        # Step 2: Detect language from text
-        print("🌐 Step 2: Detecting language...")
-        detected_language = detect_language_text(user_text)
+        # Step 2: Get AI Response
+        print(f"🤖 Step 2: Getting AI response in {detected_language}...")
+        ai_response, response_language = get_ai_response(user_text, session_id, detected_language)
         
-        # Use hint if provided, otherwise use detected
-        response_language = language_hint if language_hint != 'auto' else detected_language
-        print(f"🌐 Language: detected={detected_language}, using={response_language}")
+        # Step 3: Text to Speech
+        print(f"🔊 Step 3: Generating speech in {response_language}...")
+        audio_response = text_to_speech(ai_response, response_language)
         
-        # Step 3: Get AI Response
-        print(f"🤖 Step 3: Getting AI response in {response_language}...")
-        ai_response, final_language = get_ai_response(user_text, session_id, response_language)
-        
-        # Step 4: Text to Speech
-        print(f"🔊 Step 4: Generating speech in {final_language}...")
-        audio_response = text_to_speech(ai_response, final_language)
-        
-        if not audio_response:
+        if not audio_response or len(audio_response) < 100:
             return jsonify({
                 "success": False,
                 "error": "Failed to generate audio response",
@@ -433,7 +468,7 @@ def voice_chat():
             "ai_response": ai_response,
             "audio": audio_base64_response,
             "detected_language": detected_language,
-            "response_language": final_language,
+            "response_language": response_language,
             "session_id": session_id
         })
         
@@ -445,7 +480,7 @@ def voice_chat():
 
 @app.route('/api/text-chat', methods=['POST'])
 def text_chat():
-    """Text-only endpoint with language support"""
+    """Text-only endpoint"""
     try:
         data = request.json
         
@@ -461,16 +496,18 @@ def text_chat():
         
         print(f"💬 Text chat: {text}")
         
-        # Detect language if auto
-        if language_hint == 'auto':
-            detected_language = detect_language_text(text)
-            print(f"🌐 Auto-detected language: {detected_language}")
-        else:
+        # Detect language
+        detected_language = detect_language_from_text(text)
+        
+        # Use hint if provided
+        if language_hint != 'auto' and language_hint in LANGUAGE_MAPPING:
             detected_language = language_hint
+        
+        print(f"🌐 Language: {detected_language}")
         
         # Get AI response
         ai_response, response_language = get_ai_response(text, session_id, detected_language)
-        print(f"✅ AI response ({response_language}): {ai_response}")
+        print(f"✅ AI response ({response_language}): {ai_response[:100]}...")
         
         return jsonify({
             "success": True,
@@ -486,48 +523,39 @@ def text_chat():
         traceback.print_exc()
         return jsonify({"success": False, "error": str(e)}), 500
 
-@app.route('/api/detect-language', methods=['POST'])
-def detect_language_endpoint():
-    """Detect language from text"""
+@app.route('/api/test-audio', methods=['POST'])
+def test_audio():
+    """Test audio processing with Gemini"""
     try:
         data = request.json
-        text = data.get('text', '')
+        audio_base64 = data.get('audio')
         
-        if not text:
-            return jsonify({"success": False, "error": "No text provided"}), 400
+        if not audio_base64:
+            return jsonify({"success": False, "error": "No audio provided"}), 400
         
-        language = detect_language_text(text)
-        probabilities = []
+        audio_bytes = base64.b64decode(audio_base64)
         
-        try:
-            lang_probs = detect_langs(text)
-            probabilities = [{"lang": str(lp.lang), "prob": lp.prob} for lp in lang_probs]
-        except:
-            pass
+        # Preprocess
+        processed_audio, mime_type = preprocess_audio(audio_bytes)
+        
+        # Test transcription
+        text, language = transcribe_with_gemini(processed_audio, mime_type)
         
         return jsonify({
             "success": True,
+            "transcribed_text": text,
             "detected_language": language,
-            "probabilities": probabilities,
-            "text_sample": text[:100] + ("..." if len(text) > 100 else "")
+            "audio_size": len(audio_bytes),
+            "processed_size": len(processed_audio),
+            "mime_type": mime_type
         })
         
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
-@app.route('/api/supported-languages', methods=['GET'])
-def supported_languages():
-    """Get list of supported languages"""
-    return jsonify({
-        "success": True,
-        "languages": list(LANGUAGE_MAPPING.keys()),
-        "speech_languages": list(SPEECH_LANGUAGES.keys()),
-        "total": len(LANGUAGE_MAPPING)
-    })
-
 @app.route('/api/clear-history', methods=['POST'])
 def clear_history():
-    """Clear conversation history for a session"""
+    """Clear conversation history"""
     try:
         data = request.json
         session_id = data.get('session_id', 'default_session')
@@ -539,7 +567,7 @@ def clear_history():
         conn.commit()
         conn.close()
         
-        print(f"🗑️ Cleared {deleted} messages for session {session_id}")
+        print(f"🗑️ Cleared {deleted} messages")
         
         return jsonify({
             "success": True,
@@ -553,15 +581,14 @@ def clear_history():
 
 @app.route('/')
 def index():
-    """Homepage with status"""
-    sr_status = "✅ Available (v3.14.4)" if SR_AVAILABLE else "⚠️ Unavailable"
+    """Homepage"""
     gemini_status = "✅ Configured" if GEMINI_API_KEY else "❌ Not Configured"
     
     return f"""
     <!DOCTYPE html>
     <html>
     <head>
-        <title>🌍 Multilingual Voice AI Chatbot</title>
+        <title>🎤 Gemini Voice AI Chatbot</title>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <style>
@@ -635,97 +662,60 @@ def index():
     </head>
     <body>
         <div class="container">
-            <h1>🌍 Multilingual Voice AI Chatbot</h1>
-            <p style="color: #666;">Real-time Speech-to-Speech in Multiple Languages</p>
+            <h1>🎤 Gemini Voice AI Chatbot</h1>
+            <p style="color: #666;">Real-time Speech-to-Speech using Gemini 2.5 Flash</p>
             
             <div class="status">
                 <p><strong>Status:</strong> ✅ Active</p>
-                <p><strong>Cost:</strong> $0/month</p>
-                <p><strong>Multilingual:</strong> ✅ {len(LANGUAGE_MAPPING)} Languages Supported</p>
+                <p><strong>Speech Recognition:</strong> ✅ Gemini-native</p>
+                <p><strong>Multilingual:</strong> ✅ Auto-detection</p>
             </div>
             
             <div class="status {'warning' if not GEMINI_API_KEY else ''}">
                 <p><strong>Gemini 2.5 Flash:</strong> {gemini_status}</p>
             </div>
             
-            <div class="status {'' if SR_AVAILABLE else 'warning'}">
-                <p><strong>Speech Recognition:</strong> {sr_status}</p>
-            </div>
-            
-            <h3>🌐 Supported Languages</h3>
+            <h3>🌐 Supported Languages (Auto-detected)</h3>
             <div class="languages-grid">
-                <div class="language-tag">English (en)</div>
-                <div class="language-tag">Spanish (es)</div>
-                <div class="language-tag">French (fr)</div>
-                <div class="language-tag">German (de)</div>
-                <div class="language-tag">Italian (it)</div>
-                <div class="language-tag">Portuguese (pt)</div>
-                <div class="language-tag">Japanese (ja)</div>
-                <div class="language-tag">Korean (ko)</div>
-                <div class="language-tag">Chinese (zh)</div>
-                <div class="language-tag">Arabic (ar)</div>
-                <div class="language-tag">Hindi (hi)</div>
-                <div class="language-tag">Russian (ru)</div>
+                <div class="language-tag">English</div>
+                <div class="language-tag">Spanish</div>
+                <div class="language-tag">French</div>
+                <div class="language-tag">Arabic</div>
+                <div class="language-tag">German</div>
+                <div class="language-tag">Italian</div>
+                <div class="language-tag">Japanese</div>
+                <div class="language-tag">Korean</div>
+                <div class="language-tag">Chinese</div>
+                <div class="language-tag">Hindi</div>
+                <div class="language-tag">Russian</div>
+                <div class="language-tag">Portuguese</div>
             </div>
             
             <h2>API Endpoints</h2>
-            <div class="endpoint"><strong>POST</strong> /api/voice-chat - Voice chat (add "language_hint": "es" for Spanish, etc.)</div>
-            <div class="endpoint"><strong>POST</strong> /api/text-chat - Text chat with language detection</div>
-            <div class="endpoint"><strong>POST</strong> /api/detect-language - Detect language from text</div>
-            <div class="endpoint"><strong>GET</strong> /api/supported-languages - List supported languages</div>
-            <div class="endpoint"><strong>POST</strong> /api/clear-history - Clear conversation history</div>
+            <div class="endpoint"><strong>POST</strong> /api/voice-chat - Voice chat with auto language detection</div>
+            <div class="endpoint"><strong>POST</strong> /api/text-chat - Text chat</div>
+            <div class="endpoint"><strong>POST</strong> /api/test-audio - Test audio processing</div>
+            <div class="endpoint"><strong>POST</strong> /api/clear-history - Clear history</div>
             <div class="endpoint"><strong>GET</strong> /health - Health check</div>
             
-            <h3>Test API</h3>
-            <button onclick="testTextChat('en')">Test English</button>
-            <button onclick="testTextChat('es')">Test Spanish</button>
-            <button onclick="testTextChat('fr')">Test French</button>
+            <h3>Features</h3>
+            <ul>
+                <li>✅ Speech-to-text using Gemini 2.5 Flash</li>
+                <li>✅ Automatic language detection from audio</li>
+                <li>✅ Multilingual responses in same language</li>
+                <li>✅ Text-to-speech with gTTS</li>
+                <li>✅ Conversation memory</li>
+                <li>✅ Free to use (Render + Gemini free tier)</li>
+            </ul>
+            
             <button onclick="testHealth()">Test Health</button>
             
             <div id="testResult"></div>
             
             <script>
-                async function testTextChat(lang) {{
-                    const testTexts = {{
-                        'en': 'Hello! How are you today?',
-                        'es': '¡Hola! ¿Cómo estás hoy?',
-                        'fr': 'Bonjour! Comment allez-vous aujourd\\\\'hui?'
-                    }};
-                    
-                    const text = testTexts[lang] || testTexts['en'];
-                    const result = document.getElementById('testResult');
-                    result.innerHTML = '<div style="color: orange;">Testing ' + lang + '...</div>';
-                    
-                    try {{
-                        const response = await fetch('/api/text-chat', {{
-                            method: 'POST',
-                            headers: {{'Content-Type': 'application/json'}},
-                            body: JSON.stringify({{
-                                text: text, 
-                                session_id: 'test_' + Date.now(),
-                                language_hint: lang
-                            }})
-                        }});
-                        
-                        const data = await response.json();
-                        
-                        if (data.success) {{
-                            result.innerHTML = '<div class="success">' +
-                                '<strong>✅ ' + lang.toUpperCase() + ' SUCCESS!</strong><br>' +
-                                'Language: ' + data.response_language + '<br>' +
-                                'Response: "' + data.ai_response + '"' +
-                            '</div>';
-                        }} else {{
-                            result.innerHTML = '<div class="error"><strong>❌ Error:</strong> ' + data.error + '</div>';
-                        }}
-                    }} catch (error) {{
-                        result.innerHTML = '<div class="error"><strong>❌ Network Error:</strong> ' + error.message + '</div>';
-                    }}
-                }}
-                
                 async function testHealth() {{
                     const result = document.getElementById('testResult');
-                    result.innerHTML = '<div style="color: orange;">Checking health...</div>';
+                    result.innerHTML = '<div style="color: orange;">Checking...</div>';
                     
                     try {{
                         const response = await fetch('/health');
@@ -734,9 +724,10 @@ def index():
                         result.innerHTML = 
                             '<div class="success">' +
                                 '<strong>✅ Healthy</strong><br>' +
-                                'Speech Recognition: ' + (data.speech_recognition ? '✅ v' + data.speech_recognition_version : '❌') + '<br>' +
                                 'Gemini: ' + (data.gemini_configured ? '✅' : '❌') + '<br>' +
-                                'Multilingual: ' + (data.multilingual ? '✅ ' + data.supported_languages.length + ' languages' : '❌') +
+                                'Audio Support: ' + (data.audio_support ? '✅' : '❌') + '<br>' +
+                                'Multilingual: ' + (data.multilingual ? '✅' : '❌') + '<br>' +
+                                'Languages: ' + data.supported_languages.length +
                             '</div>';
                     }} catch (error) {{
                         result.innerHTML = '<div class="error"><strong>❌ Failed:</strong> ' + error.message + '</div>';
@@ -752,9 +743,8 @@ def index():
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    print(f"🚀 Starting Multilingual Voice Chatbot Backend on port {port}")
-    print(f"🌐 Supports {len(LANGUAGE_MAPPING)} languages")
-    print(f"🐍 Python: {os.sys.version_info.major}.{os.sys.version_info.minor}.{os.sys.version_info.micro}")
-    print(f"📊 Speech Recognition: {SR_AVAILABLE}")
-    print(f"🤖 Gemini: {'Configured (2.5 Flash)' if GEMINI_API_KEY else 'NOT CONFIGURED'}")
+    print(f"🚀 Starting Gemini Voice Chatbot on port {port}")
+    print(f"🤖 Using Gemini 2.5 Flash for speech recognition")
+    print(f"🌐 Supports {len(LANGUAGE_MAPPING)} languages with auto-detection")
+    print(f"🔊 Speech-to-text: Gemini-native")
     app.run(host='0.0.0.0', port=port, debug=False)
