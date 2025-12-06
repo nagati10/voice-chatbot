@@ -122,7 +122,7 @@ Respond conversationally in 1-3 sentences as a helpful voice assistant."""
         
         # Generate content with Gemini 2.5 Flash
         response = client.models.generate_content(
-            model="gemini-2.5-flash-preview-05-20",
+            model="gemini-2.5-flash",
             contents=full_prompt
         )
         
@@ -173,7 +173,7 @@ def health():
         "free": True,
         "speech_recognition": SR_AVAILABLE,
         "speech_recognition_version": "3.14.4",
-        "gemini_api": "gemini-2.5-flash-preview-05-20",
+        "gemini_api": "gemini-2.5-flash",
         "gemini_configured": bool(GEMINI_API_KEY),
         "python_version": f"{os.sys.version_info.major}.{os.sys.version_info.minor}.{os.sys.version_info.micro}",
         "timestamp": datetime.now().isoformat()
