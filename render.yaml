@@ -4,12 +4,13 @@ services:
     env: python
     region: oregon
     plan: free
+    runtime: python
     buildCommand: |
       pip install --upgrade pip
       pip install -r requirements.txt
-    startCommand: gunicorn app:app --timeout 120 --workers 1
+    startCommand: gunicorn app:app --timeout 240 --workers 1 --log-level debug
     envVars:
       - key: GEMINI_API_KEY
         sync: false
       - key: PYTHONUNBUFFERED
-        value: true
+        value: "1"
