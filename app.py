@@ -7,6 +7,9 @@ import os
 from datetime import datetime
 import sqlite3
 import base64
+import audioop
+from pydub import AudioSegment
+import tempfile
 
 # Handle SpeechRecognition import with fallback
 try:
@@ -40,6 +43,52 @@ def init_db():
     conn.close()
 
 init_db()
+
+# ========== AUDIO PREPROCESSING ==========
+def preprocess_audio(audio_bytes, target_format='wav'):
+    """Preprocess audio data to improve recognition rate"""
+    try:
+        print(f"🎵 Preprocessing audio: {len(audio_bytes)} bytes")
+        
+        # Method 1: Try using pydub conversion
+        try:
+            # Create temporary file
+            with tempfile.NamedTemporaryFile(suffix='.webm', delete=False) as tmp:
+                tmp.write(audio_bytes)
+                tmp_path = tmp.name
+            
+            # Load and convert with pydub
+            audio = AudioSegment.from_file(tmp_path, format="webm")
+            
+            # Convert to mono
+            audio = audio.set_channels(1)
+            
+            # Normalize volume
+            audio = audio.normalize()
+            
+            # Convert to 16kHz sample rate (Speech Recognition recommendation)
+            audio = audio.set_frame_rate(16000)
+            
+            # Export as wav
+            output = io.BytesIO()
+            audio.export(output, format="wav")
+            processed_bytes = output.getvalue()
+            
+            print(f"✅ Audio preprocessed: {len(processed_bytes)} bytes")
+            
+            # Clean up temporary file
+            os.unlink(tmp_path)
+            
+            return processed_bytes
+            
+        except Exception as e:
+            print(f"⚠️ Pydub preprocessing failed: {e}")
+            # If pydub fails, return original audio
+            return audio_bytes
+            
+    except Exception as e:
+        print(f"❌ Audio preprocessing error: {e}")
+        return audio_bytes
 
 # ========== CONVERSATION MEMORY ==========
 def save_conversation(session_id, user_input, ai_response):
@@ -75,22 +124,71 @@ def transcribe_audio(audio_bytes):
     try:
         r = sr.Recognizer()
         
-        # Convert bytes to AudioData
-        audio_data = sr.AudioData(audio_bytes, sample_rate=16000, sample_width=2)
+        # Add debugging info
+        print(f"🔊 Audio bytes length: {len(audio_bytes)}")
         
-        # Use Google Speech Recognition (FREE)
-        text = r.recognize_google(audio_data, language='en-US')
-        print(f"✅ Transcribed: {text}")
-        return text
+        # Try different sample rates
+        sample_rates = [16000, 44100, 48000]
+        
+        for sample_rate in sample_rates:
+            try:
+                print(f"🔄 Trying sample rate: {sample_rate} Hz")
+                
+                # Try different byte widths
+                for sample_width in [2, 4]:  # 16-bit or 32-bit
+                    try:
+                        audio_data = sr.AudioData(audio_bytes, 
+                                                 sample_rate=sample_rate, 
+                                                 sample_width=sample_width)
+                        
+                        # Adjust recognizer settings
+                        r.energy_threshold = 300  # Lower energy threshold
+                        r.dynamic_energy_threshold = True
+                        r.pause_threshold = 0.8   # Reduce pause threshold
+                        
+                        # Try recognition
+                        text = r.recognize_google(audio_data, 
+                                                 language='en-US',
+                                                 show_all=False)
+                        
+                        if text and len(text.strip()) > 0:
+                            print(f"✅ Transcribed ({sample_rate}Hz, {sample_width} bytes): {text}")
+                            return text
+                            
+                    except Exception as e:
+                        print(f"⚠️ Try {sample_rate}Hz/{sample_width} failed: {e}")
+                        continue
+                        
+            except Exception as e:
+                print(f"⚠️ Sample rate {sample_rate} failed: {e}")
+                continue
+        
+        # If all attempts fail, log for debugging
+        try:
+            # Save a small sample for debugging
+            import wave
+            with wave.open("debug_audio.wav", "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(16000)
+                wf.writeframes(audio_bytes[:10000])  # Save first 10KB only
+            print("💾 Saved debug audio to debug_audio.wav")
+        except:
+            pass
+            
+        print("❌ All transcription attempts failed")
+        return "I couldn't understand the audio. Please try speaking more clearly."
         
     except sr.UnknownValueError:
-        print("⚠️ Could not understand audio")
+        print("⚠️ Speech recognition could not understand audio")
         return "I couldn't understand the audio. Please try speaking more clearly."
     except sr.RequestError as e:
         print(f"❌ Speech recognition service error: {e}")
         return "Speech service is temporarily unavailable. Please try again."
     except Exception as e:
         print(f"❌ Transcription error: {e}")
+        import traceback
+        traceback.print_exc()
         return "Error processing audio. Please try again."
 
 # ========== AI RESPONSE ==========
@@ -203,12 +301,23 @@ def voice_chat():
         except Exception as e:
             return jsonify({"success": False, "error": f"Invalid base64 audio: {str(e)}"}), 400
         
+        # Preprocess audio to improve recognition
+        print("🎵 Preprocessing audio...")
+        audio_bytes = preprocess_audio(audio_bytes)
+        
         # Step 1: Speech to Text
         print("🎤 Step 1: Transcribing audio...")
         user_text = transcribe_audio(audio_bytes)
         
-        if not user_text or user_text.startswith("Speech") or user_text.startswith("Error") or user_text.startswith("I couldn't"):
-            return jsonify({"success": False, "error": user_text, "user_text": user_text}), 400
+        # Check transcription result
+        error_phrases = ["Speech recognition", "Error processing", "I couldn't understand", "service is temporarily"]
+        if any(phrase in user_text for phrase in error_phrases):
+            return jsonify({
+                "success": False, 
+                "error": user_text, 
+                "user_text": user_text,
+                "debug": "Transcription failed"
+            }), 400
         
         # Step 2: Get AI Response
         print("🤖 Step 2: Getting AI response...")
