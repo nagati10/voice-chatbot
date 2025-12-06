@@ -822,7 +822,7 @@ def index():
                     const testTexts = {{
                         'en': 'Hello! How are you today?',
                         'es': '¡Hola! ¿Cómo estás hoy?',
-                        'fr': 'Bonjour! Comment allez-vous aujourd\'hui?',
+                        'fr': 'Bonjour! Comment allez-vous aujourd\\\\'hui?',
                         'de': 'Hallo! Wie geht es dir heute?',
                         'ja': 'こんにちは！今日は元気ですか？',
                         'hi': 'नमस्ते! आप आज कैसे हैं?'
@@ -847,16 +847,16 @@ def index():
                         const data = await response.json();
                         
                         if (data.success) {{
-                            result.innerHTML = `<div class="success">
-                                <strong>✅ {lang.toUpperCase()} SUCCESS!</strong><br>
-                                Detected: ${{data.detected_language}}<br>
-                                Response: "${{data.ai_response}}"
-                            </div>`;
+                            result.innerHTML = '<div class="success">' +
+                                '<strong>✅ ' + lang.toUpperCase() + ' SUCCESS!</strong><br>' +
+                                'Detected: ' + data.detected_language + '<br>' +
+                                'Response: "' + data.ai_response + '"' +
+                            '</div>';
                         }} else {{
-                            result.innerHTML = `<div class="error"><strong>❌ Error:</strong> ${{data.error}}</div>`;
+                            result.innerHTML = '<div class="error"><strong>❌ Error:</strong> ' + data.error + '</div>';
                         }}
                     }} catch (error) {{
-                        result.innerHTML = `<div class="error"><strong>❌ Network Error:</strong> ${{error.message}}</div>`;
+                        result.innerHTML = '<div class="error"><strong>❌ Network Error:</strong> ' + error.message + '</div>';
                     }}
                 }}
                 
@@ -878,10 +878,10 @@ def index():
                         const detectData = await detectResponse.json();
                         
                         if (detectData.success) {{
-                            result.innerHTML = `<div style="color: blue;">
-                                <strong>🌐 Detected Language:</strong> ${{detectData.detected_language}}<br>
-                                Now getting AI response...
-                            </div>`;
+                            result.innerHTML = '<div style="color: blue;">' +
+                                '<strong>🌐 Detected Language:</strong> ' + detectData.detected_language + '<br>' +
+                                'Now getting AI response...' +
+                            '</div>';
                             
                             // Then get AI response
                             const chatResponse = await fetch('/api/text-chat', {{
@@ -897,19 +897,19 @@ def index():
                             const chatData = await chatResponse.json();
                             
                             if (chatData.success) {{
-                                result.innerHTML = `<div class="success">
-                                    <strong>✅ ${{detectData.detected_language.toUpperCase()}} SUCCESS!</strong><br>
-                                    Detected: ${{chatData.detected_language}}<br>
-                                    Response: "${{chatData.ai_response}}"
-                                </div>`;
+                                result.innerHTML = '<div class="success">' +
+                                    '<strong>✅ ' + detectData.detected_language.toUpperCase() + ' SUCCESS!</strong><br>' +
+                                    'Detected: ' + chatData.detected_language + '<br>' +
+                                    'Response: "' + chatData.ai_response + '"' +
+                                '</div>';
                             }} else {{
-                                result.innerHTML = `<div class="error"><strong>❌ Chat Error:</strong> ${{chatData.error}}</div>`;
+                                result.innerHTML = '<div class="error"><strong>❌ Chat Error:</strong> ' + chatData.error + '</div>';
                             }}
                         }} else {{
-                            result.innerHTML = `<div class="error"><strong>❌ Detection Error:</strong> ${{detectData.error}}</div>`;
+                            result.innerHTML = '<div class="error"><strong>❌ Detection Error:</strong> ' + detectData.error + '</div>';
                         }}
                     }} catch (error) {{
-                        result.innerHTML = `<div class="error"><strong>❌ Network Error:</strong> ${{error.message}}</div>`;
+                        result.innerHTML = '<div class="error"><strong>❌ Network Error:</strong> ' + error.message + '</div>';
                     }}
                 }}
                 
@@ -921,17 +921,16 @@ def index():
                         const response = await fetch('/health');
                         const data = await response.json();
                         
-                        result.innerHTML = `
-                            <div class="success">
-                                <strong>✅ Healthy</strong><br>
-                                Multilingual: ${{data.multilingual ? '✅' : '❌'}}<br>
-                                Supported Languages: ${{data.total}}<br>
-                                Speech Recognition: ${{data.speech_recognition ? '✅' : '❌'}}<br>
-                                Gemini: ${{data.gemini_configured ? '✅' : '❌'}}
-                            </div>
-                        `;
+                        result.innerHTML = 
+                            '<div class="success">' +
+                                '<strong>✅ Healthy</strong><br>' +
+                                'Multilingual: ' + (data.multilingual ? '✅' : '❌') + '<br>' +
+                                'Supported Languages: ' + data.total + '<br>' +
+                                'Speech Recognition: ' + (data.speech_recognition ? '✅' : '❌') + '<br>' +
+                                'Gemini: ' + (data.gemini_configured ? '✅' : '❌') +
+                            '</div>';
                     }} catch (error) {{
-                        result.innerHTML = `<div class="error"><strong>❌ Failed:</strong> ${{error.message}}</div>`;
+                        result.innerHTML = '<div class="error"><strong>❌ Failed:</strong> ' + error.message + '</div>';
                     }}
                 }}
                 
