@@ -10,6 +10,7 @@ import base64
 from pydub import AudioSegment
 import tempfile
 from langdetect import detect, detect_langs, DetectorFactory
+import numpy as np
 
 # Set seed for consistent language detection
 DetectorFactory.seed = 0
@@ -99,12 +100,60 @@ def init_db():
 
 init_db()
 
+# ========== HELPER FUNCTIONS ==========
+def filter_false_positives(text):
+    """Filter out common false positives and nonsensical text"""
+    if not text:
+        return text
+    
+    text_lower = text.lower().strip()
+    
+    # Common false positives to filter
+    false_positives = [
+        "ok google", "hey google", "ok google ok google", "ok google ok google ok google",
+        "alexa", "siri", "cortana", "hey siri",
+        "test test", "testing testing", "testing 1 2 3",
+        "hello hello", "hi hi", "hey hey",
+        "microphone test", "mic test"
+    ]
+    
+    for fp in false_positives:
+        if fp in text_lower:
+            print(f"⚠️ Filtered false positive: {fp}")
+            return "I didn't catch that. Could you please speak clearly and try again?"
+    
+    # Check for repeated single words
+    words = text_lower.split()
+    if len(words) <= 3:
+        # Check if it's just repeated words
+        if len(set(words)) == 1 and len(words) > 1:
+            print(f"⚠️ Filtered repeated word: {words[0]}")
+            return "I heard you say something, but it wasn't clear. Please speak a complete sentence."
+    
+    # Check for extremely short responses
+    if len(text.strip()) < 3:
+        return "That was too short. Please speak a complete sentence."
+    
+    # Check for nonsense combinations
+    nonsense_patterns = ["asdf", "qwerty", "zxcv", "123", "abc"]
+    for pattern in nonsense_patterns:
+        if pattern in text_lower:
+            print(f"⚠️ Filtered nonsense pattern: {pattern}")
+            return "I didn't understand that. Could you please rephrase?"
+    
+    return text
+
 # ========== LANGUAGE DETECTION ==========
 def detect_language_text(text):
     """Detect language from text with fallback"""
     try:
         if not text or len(text.strip()) < 3:
             return 'en'  # Default to English for short text
+        
+        # Filter text first
+        filtered_text = filter_false_positives(text)
+        if filtered_text != text:
+            return 'en'
         
         # Detect language
         detected = detect(text)
@@ -153,11 +202,16 @@ def detect_language_audio(text, session_id):
 
 # ========== AUDIO PREPROCESSING ==========
 def preprocess_audio(audio_bytes, target_format='wav'):
-    """Preprocess audio data to improve recognition rate"""
+    """Preprocess audio data to improve recognition rate and reduce noise"""
     try:
         print(f"🎵 Preprocessing audio: {len(audio_bytes)} bytes")
         
-        # Method 1: Try using pydub conversion
+        # Check if audio is too short
+        if len(audio_bytes) < 1000:  # Less than ~60ms at 16kHz
+            print("⚠️ Audio too short, likely noise")
+            return audio_bytes
+        
+        # Method 1: Try using pydub conversion with noise reduction
         try:
             # Create temporary file
             with tempfile.NamedTemporaryFile(suffix='.webm', delete=False) as tmp:
@@ -165,23 +219,108 @@ def preprocess_audio(audio_bytes, target_format='wav'):
                 tmp_path = tmp.name
             
             # Load and convert with pydub
-            audio = AudioSegment.from_file(tmp_path, format="webm")
+            try:
+                audio = AudioSegment.from_file(tmp_path, format="webm")
+            except:
+                # Try wav format
+                audio = AudioSegment.from_file(tmp_path, format="wav")
             
             # Convert to mono
             audio = audio.set_channels(1)
             
-            # Normalize volume
-            audio = audio.normalize()
+            # Check audio volume
+            dbfs = audio.dBFS
+            print(f"📊 Original audio: {len(audio)}ms, {dbfs:.1f} dBFS")
             
-            # Convert to 16kHz sample rate (Speech Recognition recommendation)
+            if dbfs < -40:  # Very quiet audio
+                print(f"⚠️ Audio is very quiet: {dbfs:.1f} dBFS")
+                # Try to boost volume
+                audio = audio + 20  # Boost by 20dB
+            
+            # Normalize volume to -20 dBFS (good for speech)
+            audio = audio.normalize(headroom=10)
+            
+            # Apply noise gate (remove very quiet parts)
+            try:
+                from pydub.silence import detect_nonsilent
+                
+                # Detect non-silent parts
+                min_silence_len = 100  # ms
+                silence_thresh = -35   # dBFS
+                
+                nonsilent_ranges = detect_nonsilent(
+                    audio, 
+                    min_silence_len=min_silence_len,
+                    silence_thresh=silence_thresh,
+                    seek_step=10
+                )
+                
+                if len(nonsilent_ranges) > 0:
+                    # Get start and end of speech
+                    start = min([start for start, end in nonsilent_ranges])
+                    end = max([end for start, end in nonsilent_ranges])
+                    
+                    # Add padding
+                    padding = 100  # ms
+                    start = max(0, start - padding)
+                    end = min(len(audio), end + padding)
+                    
+                    # Extract speech portion
+                    if end - start > 300:  # At least 300ms of audio
+                        audio = audio[start:end]
+                        print(f"✅ Noise gated: kept {len(audio)}ms of speech")
+                    else:
+                        print("⚠️ Speech too short after noise gating")
+                else:
+                    print("⚠️ No speech detected")
+                    
+            except Exception as e:
+                print(f"⚠️ Noise gating failed: {e}")
+                # Continue without noise gating
+            
+            # Convert to 16kHz sample rate
             audio = audio.set_frame_rate(16000)
             
-            # Export as wav
+            # Apply simple high-pass filter to remove low-frequency noise
+            try:
+                # Simple DC bias removal
+                samples = np.frombuffer(audio.raw_data, dtype=np.int16)
+                
+                # Remove DC offset
+                samples = samples - np.mean(samples)
+                
+                # Simple high-pass filter (remove frequencies below 80Hz)
+                alpha = 0.95
+                filtered = np.zeros_like(samples)
+                filtered[0] = samples[0]
+                for i in range(1, len(samples)):
+                    filtered[i] = alpha * filtered[i-1] + alpha * (samples[i] - samples[i-1])
+                
+                # Convert back to bytes
+                import array
+                samples_array = array.array('h', filtered.astype(np.int16))
+                raw_data = samples_array.tobytes()
+                
+                audio = AudioSegment(
+                    data=raw_data,
+                    sample_width=audio.sample_width,
+                    frame_rate=audio.frame_rate,
+                    channels=audio.channels
+                )
+                
+            except Exception as e:
+                print(f"⚠️ Audio filtering failed: {e}")
+            
+            # Export as wav with optimal settings
             output = io.BytesIO()
-            audio.export(output, format="wav")
+            audio.export(output, format="wav", parameters=[
+                "-acodec", "pcm_s16le",
+                "-ar", "16000",
+                "-ac", "1"
+            ])
             processed_bytes = output.getvalue()
             
-            print(f"✅ Audio preprocessed: {len(processed_bytes)} bytes")
+            print(f"✅ Audio preprocessed: {len(processed_bytes)} bytes, duration: {len(audio)}ms")
             
             # Clean up temporary file
             os.unlink(tmp_path)
@@ -190,6 +329,8 @@ def preprocess_audio(audio_bytes, target_format='wav'):
             
         except Exception as e:
             print(f"⚠️ Pydub preprocessing failed: {e}")
+            import traceback
+            traceback.print_exc()
             # If pydub fails, return original audio
             return audio_bytes
             
@@ -223,8 +364,8 @@ def get_conversation_history(session_id, limit=5):
         return []
 
 # ========== SPEECH-TO-TEXT ==========
-def transcribe_audio(audio_bytes, language_hint=None):
-    """Speech-to-text with language auto-detection"""
+def transcribe_audio(audio_bytes):
+    """Speech-to-text with improved filtering for false positives"""
     if not SR_AVAILABLE:
         return "Speech recognition is temporarily unavailable. Please use text mode."
     
@@ -233,70 +374,119 @@ def transcribe_audio(audio_bytes, language_hint=None):
         
         print(f"🔊 Audio bytes length: {len(audio_bytes)}")
         
-        # Try multiple languages if no hint provided
-        languages_to_try = []
+        # Check if audio is too short (likely noise)
+        if len(audio_bytes) < 2000:  # Less than ~125ms at 16kHz
+            print("⚠️ Audio too short, likely noise")
+            return "I didn't hear anything. Please speak clearly."
         
-        if language_hint and language_hint in SPEECH_LANGUAGES:
-            languages_to_try.append(SPEECH_LANGUAGES[language_hint])
-        else:
-            # Try common languages first
-            common_languages = ['en-US', 'es-ES', 'fr-FR', 'de-DE', 'zh-CN', 'ja-JP', 'hi-IN']
-            languages_to_try = common_languages
+        # Try with auto-detection first
+        languages_to_try = [None]  # None = Google's auto-detection
         
-        # Also try auto-detection
-        languages_to_try.append(None)  # None = Google's auto-detection
+        # Add common languages if auto-detection fails
+        common_languages = ['en-US', 'es-ES', 'fr-FR', 'de-DE', 'ja-JP', 'ko-KR', 'zh-CN']
+        languages_to_try.extend(common_languages)
+        
+        transcripts = []  # Store all successful transcripts
         
         for language_code in languages_to_try:
             try:
                 print(f"🌐 Trying language: {language_code if language_code else 'auto'}")
                 
-                # Create AudioData with common settings
+                # Create AudioData
                 audio_data = sr.AudioData(audio_bytes, 
                                          sample_rate=16000, 
                                          sample_width=2)
                 
-                # Adjust recognizer settings
-                r.energy_threshold = 300
+                # Configure recognizer for better accuracy
+                r.energy_threshold = 300  # Increased to filter noise
                 r.dynamic_energy_threshold = True
                 r.pause_threshold = 0.8
+                r.phrase_threshold = 0.1
+                r.non_speaking_duration = 0.3
                 
-                # Try recognition
-                if language_code:
-                    text = r.recognize_google(audio_data, 
-                                             language=language_code,
-                                             show_all=False)
-                else:
-                    text = r.recognize_google(audio_data, 
-                                             language=None,  # Auto-detect
-                                             show_all=False)
+                # Try recognition with show_all to get alternatives
+                results = r.recognize_google(audio_data, 
+                                           language=language_code,
+                                           show_all=True)
                 
-                if text and len(text.strip()) > 0:
-                    detected_lang = "auto" if language_code is None else language_code
-                    print(f"✅ Transcribed ({detected_lang}): {text[:50]}...")
-                    return text
-                    
+                if results and 'alternative' in results:
+                    for alt in results['alternative']:
+                        if 'transcript' in alt and alt['transcript'].strip():
+                            text = alt['transcript'].strip()
+                            confidence = alt.get('confidence', 0.5)
+                            
+                            # Filter false positives
+                            filtered_text = filter_false_positives(text)
+                            if filtered_text != text:
+                                print(f"⚠️ Filtered suspicious text: {text}")
+                                continue
+                            
+                            # Check for quality
+                            words = text.lower().split()
+                            word_count = len(words)
+                            
+                            # Skip very short or nonsense
+                            if word_count == 0:
+                                continue
+                            
+                            # Check for actual speech (not just filler)
+                            filler_words = ['uh', 'um', 'ah', 'er', 'hmm', 'oh']
+                            actual_words = [w for w in words if w not in filler_words and len(w) > 2]
+                            
+                            if len(actual_words) == 0:
+                                print(f"⚠️ Only filler words: {text}")
+                                continue
+                            
+                            # Store transcript with confidence
+                            transcripts.append({
+                                'text': text,
+                                'confidence': confidence,
+                                'language': language_code if language_code else 'auto',
+                                'word_count': word_count
+                            })
+                            
             except sr.UnknownValueError:
                 continue  # Try next language
+            except sr.RequestError as e:
+                print(f"❌ Speech recognition service error: {e}")
+                if not transcripts:  # Only return error if no transcripts yet
+                    return "Speech service is temporarily unavailable. Please try again."
+                else:
+                    break  # We have some transcripts, use them
             except Exception as e:
                 print(f"⚠️ Try {language_code} failed: {e}")
                 continue
         
-        # If all attempts fail with specific languages, try without language hint
+        # Select best transcript
+        if transcripts:
+            # Sort by confidence and word count
+            transcripts.sort(key=lambda x: (x['confidence'], x['word_count']), reverse=True)
+            best = transcripts[0]
+            
+            print(f"✅ Best transcript ({best['language']}, confidence: {best['confidence']:.2f}): {best['text'][:100]}...")
+            return best['text']
+        
+        # If we get here, all attempts failed
+        print("❌ All transcription attempts failed")
+        
+        # Save debug audio
         try:
-            audio_data = sr.AudioData(audio_bytes, sample_rate=16000, sample_width=2)
-            text = r.recognize_google(audio_data, language=None)  # Auto-detect
-            if text and len(text.strip()) > 0:
-                print(f"✅ Transcribed (auto-detect): {text[:50]}...")
-                return text
+            import wave
+            debug_filename = f"debug_audio_{datetime.now().strftime('%H%M%S')}.wav"
+            with wave.open(debug_filename, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(16000)
+                wf.writeframes(audio_bytes[:8000])  # First 0.5s
+            print(f"💾 Saved debug audio to {debug_filename}")
         except:
             pass
-        
-        print("❌ All transcription attempts failed")
-        return "I couldn't understand the audio. Please try speaking more clearly."
+            
+        return "I couldn't understand the audio. Please speak clearly and try again."
         
     except sr.UnknownValueError:
         print("⚠️ Speech recognition could not understand audio")
-        return "I couldn't understand the audio. Please try speaking more clearly."
+        return "I couldn't understand the audio. Please speak clearly and try again."
     except sr.RequestError as e:
         print(f"❌ Speech recognition service error: {e}")
         return "Speech service is temporarily unavailable. Please try again."
@@ -311,7 +501,12 @@ def get_ai_response(text, session_id="default", language='en'):
     """Get response from Gemini 2.5 Flash in the detected language"""
     
     if not GEMINI_API_KEY:
-        return "AI service is not configured. Please set GEMINI_API_KEY environment variable."
+        return "AI service is not configured. Please set GEMINI_API_KEY environment variable.", 'en'
+    
+    # Filter text first
+    filtered_text = filter_false_positives(text)
+    if filtered_text != text:
+        return filtered_text, language
     
     # Get conversation history
     history = get_conversation_history(session_id)
@@ -336,6 +531,8 @@ def get_ai_response(text, session_id="default", language='en'):
         'hi': "एक मददगार आवाज सहायक के रूप में 1-3 वाक्यों में बातचीत के तरीके से जवाब दें।",
         'ar': "رد بطريقة محادثة في 1-3 جملة كمساعد صوتي مفيد.",
         'ru': "Отвечайте разговорным тоном в 1-3 предложениях в качестве полезного голосового помощника.",
+        'it': "Rispondi conversazionalmente in 1-3 frasi come un assistente vocale utile.",
+        'pt': "Responda conversacionalmente em 1-3 frases como um assistente de voz útil.",
     }
     
     instruction = language_instructions.get(language, language_instructions['en'])
@@ -345,9 +542,9 @@ def get_ai_response(text, session_id="default", language='en'):
 
 {instruction}
 
-IMPORTANT: Respond in {language} language only."""
+IMPORTANT: Respond in {language} language only. Keep response natural and conversational."""
     
-    # Call Gemini API using new SDK
+    # Call Gemini API
     try:
         # Initialize client
         client = genai.Client(api_key=GEMINI_API_KEY)
@@ -355,21 +552,24 @@ IMPORTANT: Respond in {language} language only."""
         # Generate content with Gemini 2.5 Flash
         response = client.models.generate_content(
             model="gemini-2.5-flash",
-            contents=full_prompt
+            contents=full_prompt,
+            generation_config={
+                "temperature": 0.7,
+                "top_p": 0.8,
+                "max_output_tokens": 150
+            }
         )
         
         # Extract text from response
         if response and response.text:
             ai_text = response.text.strip()
-            print(f"✅ Gemini 2.5 response ({language}): {ai_text[:50]}...")
+            print(f"✅ Gemini 2.5 response ({language}): {ai_text[:100]}...")
         else:
             print("⚠️ Empty response from Gemini")
             ai_text = "I heard you, but I'm having trouble responding right now. Could you rephrase that?"
         
     except Exception as e:
         print(f"❌ Gemini API error: {e}")
-        print(f"Error type: {type(e).__name__}")
-        print(f"Error details: {str(e)}")
         
         # Fallback response in detected language
         fallback_responses = {
@@ -422,14 +622,14 @@ def text_to_speech(text, language='en'):
         
         tts_lang = tts_language_map.get(language, 'en')
         
-        # For Chinese, handle both simplified and traditional
+        # Handle Chinese variants
         if language in ['zh-cn', 'zh-CN']:
             tts_lang = 'zh-CN'
         elif language in ['zh-tw', 'zh-TW']:
             tts_lang = 'zh-TW'
         
         print(f"🔊 Generating TTS in {tts_lang} language")
-        tts = gTTS(text=text, lang=tts_lang, slow=False)
+        tts = gTTS(text=text, lang=tts_lang, slow=False, lang_check=False)
         audio_buffer = io.BytesIO()
         tts.write_to_fp(audio_buffer)
         audio_buffer.seek(0)
@@ -502,16 +702,19 @@ def voice_chat():
         
         # Step 1: Speech to Text
         print("🎤 Step 1: Transcribing audio...")
-        user_text = transcribe_audio(audio_bytes, language_hint)
+        user_text = transcribe_audio(audio_bytes)
         
         # Check transcription result
-        error_phrases = ["Speech recognition", "Error processing", "I couldn't understand", "service is temporarily"]
+        error_phrases = ["Speech recognition", "Error processing", "I couldn't understand", 
+                        "service is temporarily", "I didn't hear", "Please speak", 
+                        "That was too short"]
+        
         if any(phrase in user_text for phrase in error_phrases):
             return jsonify({
                 "success": False, 
                 "error": user_text, 
                 "user_text": user_text,
-                "debug": "Transcription failed"
+                "debug": "Transcription failed or filtered"
             }), 400
         
         # Step 2: Detect language from text
@@ -527,7 +730,7 @@ def voice_chat():
         print(f"🔊 Step 4: Generating speech in {response_language}...")
         audio_response = text_to_speech(ai_response, response_language)
         
-        if not audio_response:
+        if not audio_response or len(audio_response) < 100:
             return jsonify({
                 "success": False,
                 "error": "Failed to generate audio response",
@@ -573,6 +776,15 @@ def text_chat():
         
         print(f"💬 Text chat: {text}")
         
+        # Filter text
+        filtered_text = filter_false_positives(text)
+        if filtered_text != text:
+            return jsonify({
+                "success": False,
+                "error": filtered_text,
+                "user_text": text
+            }), 400
+        
         # Detect language
         detected_language = detect_language_text(text)
         if language_hint and language_hint in LANGUAGE_MAPPING:
@@ -582,7 +794,7 @@ def text_chat():
         
         # Get AI response
         ai_response, response_language = get_ai_response(text, session_id, detected_language)
-        print(f"✅ AI response ({response_language}): {ai_response[:50]}...")
+        print(f"✅ AI response ({response_language}): {ai_response[:100]}...")
         
         return jsonify({
             "success": True,
@@ -607,6 +819,15 @@ def detect_language_endpoint():
         
         if not text:
             return jsonify({"success": False, "error": "No text provided"}), 400
+        
+        # Filter text first
+        filtered_text = filter_false_positives(text)
+        if filtered_text != text:
+            return jsonify({
+                "success": False,
+                "error": "Text contains suspicious patterns",
+                "filtered_text": filtered_text
+            }), 400
         
         language = detect_language_text(text)
         probabilities = []
@@ -636,6 +857,55 @@ def supported_languages():
         "speech_languages": list(SPEECH_LANGUAGES.keys()),
         "total": len(LANGUAGE_MAPPING)
     })
+
+@app.route('/api/debug-audio', methods=['POST'])
+def debug_audio():
+    """Debug endpoint to analyze audio issues"""
+    try:
+        data = request.json
+        audio_base64 = data.get('audio')
+        
+        if not audio_base64:
+            return jsonify({"success": False, "error": "No audio provided"}), 400
+        
+        audio_bytes = base64.b64decode(audio_base64)
+        
+        # Save for analysis
+        import wave
+        filename = f"debug_audio_{datetime.now().strftime('%H%M%S')}.wav"
+        with wave.open(filename, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(16000)
+            wf.writeframes(audio_bytes)
+        
+        # Analyze audio
+        audio = AudioSegment.from_wav(filename)
+        
+        # Try transcription for debugging
+        transcription = ""
+        if SR_AVAILABLE:
+            try:
+                r = sr.Recognizer()
+                audio_data = sr.AudioData(audio_bytes, sample_rate=16000, sample_width=2)
+                transcription = r.recognize_google(audio_data, language='en-US', show_all=False)
+            except:
+                transcription = "Transcription failed"
+        
+        return jsonify({
+            "success": True,
+            "audio_length_ms": len(audio),
+            "sample_rate": audio.frame_rate,
+            "channels": audio.channels,
+            "dbFS": audio.dBFS,
+            "max_dBFS": audio.max_dBFS,
+            "rms": audio.rms,
+            "file_saved": filename,
+            "transcription_attempt": transcription
+        })
+        
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/api/clear-history', methods=['POST'])
 def clear_history():
@@ -797,6 +1067,7 @@ def index():
             <div class="endpoint"><strong>POST</strong> /api/text-chat - Text chat with language detection</div>
             <div class="endpoint"><strong>POST</strong> /api/detect-language - Detect language from text</div>
             <div class="endpoint"><strong>GET</strong> /api/supported-languages - List supported languages</div>
+            <div class="endpoint"><strong>POST</strong> /api/debug-audio - Debug audio issues</div>
             <div class="endpoint"><strong>POST</strong> /api/clear-history - Clear conversation history</div>
             <div class="endpoint"><strong>GET</strong> /health - Health check</div>
             
@@ -925,7 +1196,7 @@ def index():
                             '<div class="success">' +
                                 '<strong>✅ Healthy</strong><br>' +
                                 'Multilingual: ' + (data.multilingual ? '✅' : '❌') + '<br>' +
-                                'Supported Languages: ' + data.total + '<br>' +
+                                'Supported Languages: ' + data.supported_languages.length + '<br>' +
                                 'Speech Recognition: ' + (data.speech_recognition ? '✅' : '❌') + '<br>' +
                                 'Gemini: ' + (data.gemini_configured ? '✅' : '❌') +
                             '</div>';
