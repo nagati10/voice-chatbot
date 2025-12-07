@@ -4,7 +4,7 @@ import base64
 from datetime import datetime
 import sqlite3
 import json
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, render_template_string
 from flask_cors import CORS
 from google import genai
 from google.genai import types
@@ -14,7 +14,7 @@ import random
 app = Flask(__name__)
 CORS(app)
 
-# ========== CONFIG - MULTI-KEY LOAD BALANCING ==========
+# ========== CONFIG ==========
 GEMINI_KEYS = {
     'key1': os.getenv("GEMINI_KEY1"),
     'key2': os.getenv("GEMINI_KEY2"),
@@ -41,55 +41,27 @@ if not gemini_clients:
     print("⚠️ WARNING: No Gemini API keys configured!")
 else:
     print(f"🎯 Total active keys: {len(gemini_clients)}")
-    print(f"📊 Total RPD capacity: {len(gemini_clients) * 20} requests/day")
 
-# ========== DATABASE INITIALIZATION ==========
+# ========== DATABASE ==========
 def init_db():
-    """Initialize database with all tables"""
     conn = sqlite3.connect(DATABASE_FILE)
     c = conn.cursor()
-    
     c.execute('''CREATE TABLE IF NOT EXISTS conversations
                  (session_id TEXT, timestamp DATETIME, user_input TEXT, ai_response TEXT, language TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS key_usage
                  (key_name TEXT, timestamp DATETIME, endpoint TEXT, status TEXT)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS session_context
-                 (session_id TEXT PRIMARY KEY, user_details TEXT, offer_details TEXT, chat_history TEXT, timestamp DATETIME)''')
-    
     conn.commit()
     conn.close()
 
 init_db()
 
 # ========== HELPER FUNCTIONS ==========
-def format_list(items):
-    """Format list items for prompt"""
-    if not items:
-        return "Not specified"
-    if isinstance(items, list):
-        return '\n'.join([f"• {item}" for item in items])
-    return str(items)
-
 def get_random_key():
-    """Get a random active key for load balancing"""
     if not gemini_clients:
         return None
     return random.choice(list(gemini_clients.keys()))
 
-def log_key_usage(key_name, endpoint, status="success"):
-    """Log which key was used for monitoring"""
-    try:
-        conn = sqlite3.connect(DATABASE_FILE)
-        c = conn.cursor()
-        c.execute("INSERT INTO key_usage VALUES (?, ?, ?, ?)",
-                  (key_name, datetime.now(), endpoint, status))
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        print(f"Database error logging key usage: {e}")
-
 def detect_language_from_text(text):
-    """Improved language detection from text"""
     if not text or not text.strip():
         return 'en'
     
@@ -109,18 +81,11 @@ def detect_language_from_text(text):
         return 'ko'
     
     language_keywords = {
-        'en': ['hello', 'hi', 'thank you', 'please', 'how are', 'what is'],
+        'en': ['hello', 'hi', 'thank', 'please', 'how', 'what'],
         'es': ['hola', 'gracias', 'por favor', 'cómo', 'qué'],
-        'fr': ['bonjour', 'merci', 's\'il vous plaît', 'comment', 'quoi'],
+        'fr': ['bonjour', 'merci', 's\'il', 'comment', 'quoi'],
         'de': ['hallo', 'danke', 'bitte', 'wie', 'was'],
-        'it': ['ciao', 'grazie', 'per favore', 'come', 'che'],
-        'pt': ['olá', 'obrigado', 'por favor', 'como', 'o que'],
-        'ru': ['привет', 'спасибо', 'пожалуйста', 'как', 'что'],
         'ar': ['مرحبا', 'شكرا', 'من فضلك', 'كيف', 'ما'],
-        'hi': ['नमस्ते', 'धन्यवाद', 'कृपया', 'कैसे', 'क्या'],
-        'ja': ['こんにちは', 'ありがとう', 'お願いします', 'どう', '何'],
-        'ko': ['안녕하세요', '감사합니다', '부탁합니다', '어떻게', '무엇'],
-        'zh': ['你好', '谢谢', '请', '怎么', '什么'],
     }
     
     for lang, keywords in language_keywords.items():
@@ -131,7 +96,6 @@ def detect_language_from_text(text):
     return 'en'
 
 def save_conversation(session_id, user_input, ai_response, language='en'):
-    """Save conversation to database"""
     try:
         conn = sqlite3.connect(DATABASE_FILE)
         c = conn.cursor()
@@ -143,22 +107,20 @@ def save_conversation(session_id, user_input, ai_response, language='en'):
         print(f"Database error: {e}")
 
 def get_conversation_history(session_id, limit=10):
-    """Get conversation history for a session"""
     try:
         conn = sqlite3.connect(DATABASE_FILE)
         c = conn.cursor()
-        c.execute("SELECT user_input, ai_response, language FROM conversations WHERE session_id=? ORDER BY timestamp DESC LIMIT ?",
+        c.execute("SELECT user_input, ai_response FROM conversations WHERE session_id=? ORDER BY timestamp DESC LIMIT ?",
                   (session_id, limit))
         history = c.fetchall()
         conn.close()
-        return history
+        return list(reversed(history))
     except Exception as e:
         print(f"Database error: {e}")
         return []
 
 # ========== SYSTEM PROMPT BUILDERS ==========
 def build_system_prompt(user_details, offer_details, chat_history):
-    """Build coaching system prompt"""
     base_prompt = """You are an expert job interview coach for "Talleb 5edma" (طلب خدمة - Interview Preparation Service).
 
 CORE ROLE:
@@ -171,39 +133,51 @@ RESPONSE GUIDELINES:
 - Always respond in the language the user is using
 - Keep responses concise but thorough (2-4 sentences)
 - Be specific to their job opportunity
-- Reference their experience level"""
+- Reference their experience level
+- Remember all previous conversation context"""
 
     if user_details:
         user_context = f"""
 
-========== ABOUT THE USER ==========
+CANDIDATE PROFILE:
 Name: {user_details.get('name', 'Unknown')}
 Experience: {user_details.get('experience_level', 'Not specified')}
 Education: {user_details.get('education', 'Not specified')}
-Skills: {', '.join(user_details.get('skills', [])) if isinstance(user_details.get('skills'), list) else user_details.get('skills', 'Not specified')}"""
+Skills: {', '.join(user_details.get('skills', [])) if isinstance(user_details.get('skills'), list) else user_details.get('skills', 'Not specified')}
+Country: {user_details.get('country', 'Not specified')}
+Languages: {', '.join(user_details.get('languages', [])) if isinstance(user_details.get('languages'), list) else user_details.get('languages', 'Not specified')}"""
         base_prompt += user_context
 
     if offer_details:
         offer_context = f"""
 
-========== ABOUT THE JOB OPPORTUNITY ==========
+JOB OPPORTUNITY:
 Position: {offer_details.get('position', 'Not specified')}
 Company: {offer_details.get('company', 'Not specified')}
 Requirements: {', '.join(offer_details.get('required_skills', [])) if isinstance(offer_details.get('required_skills'), list) else offer_details.get('required_skills', 'Not specified')}
-Salary: {offer_details.get('salary_range', 'Not specified')}"""
+Salary: {offer_details.get('salary_range', 'Not specified')}
+Location: {offer_details.get('location', 'Not specified')}"""
         base_prompt += offer_context
+
+    if chat_history:
+        base_prompt += f"""
+
+CONVERSATION HISTORY (Remember this context):
+"""
+        for user_msg, ai_msg in chat_history[-5:]:
+            base_prompt += f"User: {user_msg}\nCoach: {ai_msg}\n"
 
     return base_prompt
 
 def build_employer_interview_prompt(user_details, offer_details, chat_history):
-    """Build employer role play system prompt"""
-    prompt = f"""You are a professional hiring manager conducting a MOCK INTERVIEW.
+    prompt = f"""You are a professional hiring manager conducting a MOCK INTERVIEW for "Talleb 5edma".
 
 CANDIDATE INFORMATION:
 Name: {user_details.get('name', 'Candidate')}
 Experience: {user_details.get('experience_level', 'Not specified')}
 Education: {user_details.get('education', 'Not specified')}
 Skills: {', '.join(user_details.get('skills', [])) if isinstance(user_details.get('skills'), list) else user_details.get('skills', 'Not specified')}
+Country: {user_details.get('country', 'Not specified')}
 
 JOB POSITION:
 Title: {offer_details.get('position', 'Not specified')}
@@ -214,72 +188,53 @@ INTERVIEW GUIDELINES:
 1. Start with greeting if first message
 2. Ask 1-2 relevant questions per turn
 3. Reference their specific experience
-4. Ask technical questions
-5. Probe for gaps or areas that need clarification
-6. Provide constructive feedback
-7. Evaluate fit for role
-8. Remember everything they said
+4. Ask technical & behavioral questions
+5. React naturally to their answers
+6. Make it feel like a REAL interview
+7. Focus on assessing fit for THIS specific role
 
 IMPORTANT:
 - Be professional but approachable
-- Ask open-ended questions (not yes/no)
-- React naturally to their answers
-- Make it feel like a REAL interview
+- Ask open-ended questions
 - Don't give away answers
-- Focus on assessing fit for THIS specific role"""
+- Remember everything they said
+- React to previous answers"""
+
+    if chat_history:
+        prompt += f"""
+
+CONVERSATION HISTORY (Remember this context):
+"""
+        for user_msg, ai_msg in chat_history[-5:]:
+            prompt += f"Candidate: {user_msg}\nYou (Interviewer): {ai_msg}\n"
 
     return prompt
 
-# ========== AI RESPONSE FUNCTIONS ==========
+# ========== AI FUNCTIONS ==========
 def transcribe_with_gemini(audio_bytes, mime_type="audio/webm"):
-    """Transcribe speech to text using Gemini"""
     if not gemini_clients:
-        return "Speech-to-text service is not configured.", "en"
+        return "Speech-to-text service not configured.", "en"
     
     key_name = get_random_key()
     client = gemini_clients[key_name]
     
     try:
-        print(f"🎤 Transcribing with {key_name.upper()} ({len(audio_bytes)} bytes)...")
+        print(f"🎤 Transcribing with {key_name.upper()}...")
         
         prompt = """Listen to this audio and transcribe the speech to text.
 Detect the language and return ONLY a valid JSON response:
-{"text": "transcribed text", "language": "en", "confidence": 0.95}
-
-Language codes: en, es, fr, ar, zh, ja, ko, ru, de, it, pt, hi
-If you cannot understand, return: {"text": "", "language": "unknown", "confidence": 0.0}"""
+{"text": "transcribed text", "language": "en", "confidence": 0.95}"""
         
         response = client.models.generate_content(
             model="gemini-2.5-flash",
-            contents=[
-                prompt,
-                types.Part.from_bytes(data=audio_bytes, mime_type=mime_type)
-            ],
+            contents=[prompt, types.Part.from_bytes(data=audio_bytes, mime_type=mime_type)],
             config=types.GenerateContentConfig(
                 temperature=0.1,
                 max_output_tokens=2048,
-                safety_settings=[
-                    types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_NONE"),
-                    types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="BLOCK_NONE"),
-                    types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="BLOCK_NONE"),
-                    types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_NONE"),
-                ]
             )
         )
         
-        log_key_usage(key_name, "/api/voice-chat", "success")
-        
-        result_text = None
-        if hasattr(response, 'text') and response.text:
-            result_text = response.text.strip()
-        elif response and hasattr(response, 'candidates') and response.candidates:
-            candidate = response.candidates[0]
-            if hasattr(candidate, 'content') and candidate.content:
-                if hasattr(candidate.content, 'parts') and candidate.content.parts:
-                    result_text = candidate.content.parts[0].text.strip()
-        
-        if not result_text:
-            return "Could not transcribe audio. Please try again.", "en"
+        result_text = response.text.strip() if hasattr(response, 'text') else ""
         
         if "json" in result_text.lower() and '`' in result_text:
             result_text = result_text.replace('```json', '').replace('```', '').strip()
@@ -287,40 +242,30 @@ If you cannot understand, return: {"text": "", "language": "unknown", "confidenc
         try:
             result = json.loads(result_text)
             text = result.get("text", "").strip()
-            language = result.get("language", "unknown")
-            confidence = result.get("confidence", 0)
-            
-            if confidence > 0.1 and text:
-                if language == "unknown" and text:
-                    language = detect_language_from_text(text)
-                return text, language
-            else:
-                return "Could you please repeat that more clearly?", "en"
-                
-        except json.JSONDecodeError:
-            import re
-            text_match = re.search(r'"text"\s*:\s*"([^"]+)"', result_text)
-            lang_match = re.search(r'"language"\s*:\s*"([^"]+)"', result_text)
-            
-            if text_match:
-                text = text_match.group(1)
-                language = lang_match.group(1) if lang_match else detect_language_from_text(text)
-                return text, language
-            
-            return "Could not understand the audio. Please try again.", "en"
+            language = result.get("language", "en")
+            if not text:
+                return "Could not hear that clearly. Please repeat.", "en"
+            return text, language
+        except:
+            return "Could not understand audio.", "en"
             
     except Exception as e:
-        print(f"❌ Gemini STT error on {key_name}: {e}")
-        log_key_usage(key_name, "/api/voice-chat", "error")
-        return "Error processing audio. Please try again.", "en"
+        print(f"❌ STT error: {e}")
+        return "Error processing audio.", "en"
 
-def get_context_aware_response(text, session_id, language, system_prompt, key_name):
-    """Get AI response with full context"""
-    if not gemini_clients or key_name not in gemini_clients:
-        return "AI service is not configured."
+def get_ai_response(text, user_details, offer_details, chat_history, mode, language):
+    if not gemini_clients:
+        return "AI service not configured."
     
+    key_name = get_random_key()
     client = gemini_clients[key_name]
-    full_prompt = f"{system_prompt}\n\n--- USER MESSAGE ---\n{text}"
+    
+    if mode == 'employer_interview':
+        system_prompt = build_employer_interview_prompt(user_details, offer_details, chat_history)
+    else:
+        system_prompt = build_system_prompt(user_details, offer_details, chat_history)
+    
+    full_prompt = f"{system_prompt}\n\n--- CURRENT MESSAGE ---\n{text}"
     
     try:
         print(f"📤 Sending to {key_name.upper()}...")
@@ -331,41 +276,22 @@ def get_context_aware_response(text, session_id, language, system_prompt, key_na
             config=types.GenerateContentConfig(
                 temperature=0.7,
                 max_output_tokens=2048,
-                safety_settings=[
-                    types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_NONE"),
-                    types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="BLOCK_NONE"),
-                    types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="BLOCK_NONE"),
-                    types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_NONE"),
-                ]
             )
         )
         
-        log_key_usage(key_name, "/api/text-chat", "success")
-        
-        ai_text = None
-        if response and hasattr(response, 'text') and response.text:
-            ai_text = response.text.strip()
-        elif response and hasattr(response, 'candidates') and response.candidates:
-            candidate = response.candidates[0]
-            if hasattr(candidate, 'content') and candidate.content:
-                if hasattr(candidate.content, 'parts') and candidate.content.parts:
-                    if hasattr(candidate.content.parts[0], 'text'):
-                        ai_text = candidate.content.parts[0].text.strip()
+        ai_text = response.text.strip() if hasattr(response, 'text') else ""
         
         if ai_text:
-            print(f"✅ Response: {ai_text[:100]}...")
-            save_conversation(session_id, text, ai_text, language)
+            print(f"✅ Response: {ai_text[:80]}...")
             return ai_text
         else:
-            return "Sorry, I couldn't generate a response. Please try again."
+            return "Sorry, I couldn't generate a response."
             
     except Exception as e:
         print(f"❌ Error: {e}")
-        log_key_usage(key_name, "/api/text-chat", "error")
-        return "I'm having trouble connecting right now. Please try again."
+        return "I'm having trouble connecting. Please try again."
 
 def text_to_speech(text, language='en'):
-    """Convert text to speech using gTTS"""
     try:
         tts_lang = LANGUAGE_MAPPING.get(language, 'en')
         tts = gTTS(text=text, lang=tts_lang, slow=False)
@@ -375,69 +301,670 @@ def text_to_speech(text, language='en'):
         audio_buffer.seek(0)
         audio_bytes = audio_buffer.read()
         
-        print(f"✅ Generated TTS audio ({tts_lang}): {len(audio_bytes)} bytes")
+        print(f"✅ Generated TTS: {len(audio_bytes)} bytes")
         return base64.b64encode(audio_bytes).decode('utf-8')
     except Exception as e:
         print(f"❌ TTS error: {e}")
         return None
 
-# ========== API ENDPOINTS ==========
-@app.route('/health', methods=['GET'])
-def health():
-    """Health check endpoint"""
-    return jsonify({
-        "status": "active",
-        "total_keys": len(gemini_clients),
-        "active_keys": list(gemini_clients.keys()),
-        "gemini_api": "gemini-2.5-flash",
-        "endpoints": ["/api/text-chat", "/api/voice-chat", "/api/context/save"],
-        "total_rpd_capacity": len(gemini_clients) * 20,
-        "timestamp": datetime.now().isoformat()
-    })
+# ========== ROUTES ==========
+HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Talleb 5edma - Interview Coach</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #f5f5f5;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            display: grid;
+            grid-template-columns: 350px 1fr;
+            gap: 20px;
+            min-height: 100vh;
+        }
+        
+        .setup-panel {
+            background: white;
+            border-radius: 15px;
+            padding: 20px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            height: fit-content;
+            position: sticky;
+            top: 20px;
+            overflow-y: auto;
+            max-height: calc(100vh - 40px);
+        }
+        
+        .chat-container {
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            max-height: calc(100vh - 40px);
+        }
+        
+        .setup-panel h2 {
+            font-size: 18px;
+            margin-bottom: 15px;
+            color: #333;
+        }
+        
+        .form-group {
+            margin-bottom: 15px;
+        }
+        
+        .form-group label {
+            display: block;
+            font-size: 12px;
+            font-weight: 600;
+            margin-bottom: 5px;
+            color: #666;
+        }
+        
+        input, textarea, select {
+            width: 100%;
+            padding: 10px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-family: inherit;
+            font-size: 13px;
+        }
+        
+        input:focus, textarea:focus, select:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        
+        textarea {
+            resize: vertical;
+            min-height: 80px;
+        }
+        
+        .mode-selector {
+            display: flex;
+            gap: 10px;
+            margin: 15px 0;
+        }
+        
+        .mode-btn {
+            flex: 1;
+            padding: 10px;
+            border: 2px solid #ddd;
+            background: white;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 600;
+            font-size: 12px;
+            transition: all 0.3s;
+        }
+        
+        .mode-btn.active {
+            background: #667eea;
+            color: white;
+            border-color: #667eea;
+        }
+        
+        .mode-btn:hover {
+            border-color: #667eea;
+        }
+        
+        .chat-header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 15px 15px 0 0;
+        }
+        
+        .chat-header h1 {
+            font-size: 24px;
+            margin-bottom: 5px;
+        }
+        
+        .chat-header p {
+            font-size: 13px;
+            opacity: 0.9;
+        }
+        
+        .chat-area {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        
+        .message {
+            display: flex;
+            animation: fadeIn 0.3s ease-in;
+        }
+        
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        
+        .message.user {
+            justify-content: flex-end;
+        }
+        
+        .message-bubble {
+            max-width: 70%;
+            padding: 12px 16px;
+            border-radius: 18px;
+            line-height: 1.5;
+            font-size: 14px;
+        }
+        
+        .message.user .message-bubble {
+            background: #667eea;
+            color: white;
+        }
+        
+        .message.ai .message-bubble {
+            background: #f0f0f0;
+            color: #333;
+        }
+        
+        .typing-indicator {
+            display: flex;
+            gap: 4px;
+            padding: 12px 16px;
+        }
+        
+        .typing-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #999;
+            animation: typing 1.4s infinite;
+        }
+        
+        .typing-dot:nth-child(2) { animation-delay: 0.2s; }
+        .typing-dot:nth-child(3) { animation-delay: 0.4s; }
+        
+        @keyframes typing {
+            0%, 60%, 100% { transform: translateY(0); }
+            30% { transform: translateY(-10px); }
+        }
+        
+        .input-area {
+            padding: 15px 20px;
+            border-top: 1px solid #eee;
+            display: flex;
+            gap: 10px;
+            border-radius: 0 0 15px 15px;
+        }
+        
+        .input-wrapper {
+            flex: 1;
+            display: flex;
+            gap: 8px;
+        }
+        
+        .input-wrapper textarea {
+            margin: 0;
+            min-height: 44px;
+        }
+        
+        button {
+            padding: 12px 20px;
+            border: none;
+            border-radius: 8px;
+            font-weight: 600;
+            cursor: pointer;
+            background: #667eea;
+            color: white;
+            transition: all 0.3s;
+        }
+        
+        button:hover {
+            background: #764ba2;
+        }
+        
+        .voice-btn {
+            padding: 12px;
+            min-width: 44px;
+        }
+        
+        .voice-btn.recording {
+            background: #f44336;
+            animation: pulse 1s infinite;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.6; }
+        }
+        
+        .status {
+            padding: 10px 15px;
+            background: #e8f5e9;
+            border-left: 4px solid #4caf50;
+            border-radius: 4px;
+            font-size: 12px;
+            color: #2e7d32;
+        }
+        
+        .status.error {
+            background: #ffebee;
+            border-left-color: #c62828;
+            color: #c62828;
+        }
+        
+        @media (max-width: 768px) {
+            .container {
+                grid-template-columns: 1fr;
+            }
+            
+            .setup-panel {
+                position: relative;
+                top: auto;
+                max-height: none;
+                margin-bottom: 20px;
+            }
+            
+            .chat-container {
+                height: auto;
+                max-height: 600px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Setup Panel -->
+        <div class="setup-panel">
+            <h2>📋 Test Setup</h2>
+            
+            <div class="form-group">
+                <label>Mode</label>
+                <div class="mode-selector">
+                    <button class="mode-btn active" onclick="setMode('coaching')">🧑‍🏫 Coaching</button>
+                    <button class="mode-btn" onclick="setMode('employer_interview')">👔 Employer</button>
+                </div>
+            </div>
+            
+            <h3 style="font-size: 14px; margin-top: 20px; margin-bottom: 10px; color: #666;">Candidate</h3>
+            
+            <div class="form-group">
+                <label>Name</label>
+                <input type="text" id="name" placeholder="Ahmed" value="Ahmed">
+            </div>
+            
+            <div class="form-group">
+                <label>Experience</label>
+                <input type="text" id="experience" placeholder="3 years React" value="3 years React Developer">
+            </div>
+            
+            <div class="form-group">
+                <label>Education</label>
+                <input type="text" id="education" placeholder="BS Computer Science" value="Bachelor in Computer Science">
+            </div>
+            
+            <div class="form-group">
+                <label>Skills (comma separated)</label>
+                <textarea id="skills" placeholder="JavaScript, React, Node.js">JavaScript, React, Node.js, MongoDB, AWS</textarea>
+            </div>
+            
+            <div class="form-group">
+                <label>Country</label>
+                <input type="text" id="country" placeholder="Egypt" value="Egypt">
+            </div>
+            
+            <div class="form-group">
+                <label>Languages</label>
+                <input type="text" id="languages" placeholder="Arabic, English" value="Arabic, English">
+            </div>
+            
+            <h3 style="font-size: 14px; margin-top: 20px; margin-bottom: 10px; color: #666;">Job Offer</h3>
+            
+            <div class="form-group">
+                <label>Position</label>
+                <input type="text" id="position" placeholder="Senior Developer" value="Senior Developer">
+            </div>
+            
+            <div class="form-group">
+                <label>Company</label>
+                <input type="text" id="company" placeholder="Tech Corp" value="Tech Corp">
+            </div>
+            
+            <div class="form-group">
+                <label>Required Skills</label>
+                <textarea id="required_skills">JavaScript, React, Node.js, System Design, Leadership</textarea>
+            </div>
+            
+            <div class="form-group">
+                <label>Salary</label>
+                <input type="text" id="salary" value="50k-70k EUR">
+            </div>
+            
+            <div class="form-group">
+                <label>Location</label>
+                <input type="text" id="location" value="Paris, France">
+            </div>
+            
+            <h3 style="font-size: 14px; margin-top: 20px; margin-bottom: 10px; color: #666;">Chat History (from previous session)</h3>
+            
+            <div class="form-group">
+                <label>Previous Messages (JSON array)</label>
+                <textarea id="chat_history" placeholder="[]" style="font-family: monospace; font-size: 11px;">[]</textarea>
+            </div>
+            
+            <button onclick="startNewSession()" style="width: 100%; margin-top: 20px;">🔄 Start New Session</button>
+        </div>
+        
+        <!-- Chat Container -->
+        <div class="chat-container">
+            <!-- Header -->
+            <div class="chat-header">
+                <h1>🎙️ Talleb 5edma</h1>
+                <p id="modeDisplay">Coaching Mode - Practice with AI</p>
+            </div>
+            
+            <!-- Chat Area -->
+            <div class="chat-area" id="chatArea"></div>
+            
+            <!-- Status -->
+            <div style="padding: 15px 20px; border-top: 1px solid #eee;">
+                <div id="status" class="status">Ready to chat</div>
+            </div>
+            
+            <!-- Input -->
+            <div class="input-area">
+                <div class="input-wrapper">
+                    <textarea id="messageInput" placeholder="Type your message..." onkeypress="handleKeyPress(event)" rows="1"></textarea>
+                    <button class="voice-btn" id="voiceBtn" onclick="toggleVoice()" title="Record">🎤</button>
+                </div>
+                <button onclick="sendMessage()">Send</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_URL = 'http://localhost:5000';
+        let currentMode = 'coaching';
+        let sessionId = 'session_' + Date.now();
+        let isRecording = false;
+        let mediaRecorder = null;
+        let audioChunks = [];
+
+        function setMode(mode) {
+            currentMode = mode;
+            document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
+            event.target.classList.add('active');
+            
+            const text = mode === 'employer_interview' ? 
+                '👔 Employer Interview Mode - Real mock interview' : 
+                '🧑‍🏫 Coaching Mode - Tips & advice';
+            document.getElementById('modeDisplay').textContent = text;
+            updateStatus(`Switched to ${mode}`, 'success');
+        }
+
+        function startNewSession() {
+            sessionId = 'session_' + Date.now();
+            document.getElementById('chatArea').innerHTML = '';
+            updateStatus('New session started', 'success');
+            addSystemMessage('👋 New session started. Ready to practice!');
+        }
+
+        function handleKeyPress(event) {
+            if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault();
+                sendMessage();
+            }
+        }
+
+        function addMessage(text, isUser) {
+            const chatArea = document.getElementById('chatArea');
+            const div = document.createElement('div');
+            div.className = `message ${isUser ? 'user' : 'ai'}`;
+            div.innerHTML = `<div class="message-bubble">${escapeHtml(text)}</div>`;
+            chatArea.appendChild(div);
+            chatArea.scrollTop = chatArea.scrollHeight;
+        }
+
+        function addSystemMessage(text) {
+            const chatArea = document.getElementById('chatArea');
+            const div = document.createElement('div');
+            div.className = 'message ai';
+            div.innerHTML = `<div class="message-bubble" style="background: #e3f2fd; color: #1976d2; font-weight: 600;">${text}</div>`;
+            chatArea.appendChild(div);
+            chatArea.scrollTop = chatArea.scrollHeight;
+        }
+
+        function showTyping() {
+            const chatArea = document.getElementById('chatArea');
+            const div = document.createElement('div');
+            div.className = 'message ai';
+            div.id = 'typing';
+            div.innerHTML = `<div class="message-bubble"><div class="typing-indicator"><div class="typing-dot"></div><div class="typing-dot"></div><div class="typing-dot"></div></div></div>`;
+            chatArea.appendChild(div);
+            chatArea.scrollTop = chatArea.scrollHeight;
+        }
+
+        function removeTyping() {
+            const typing = document.getElementById('typing');
+            if (typing) typing.remove();
+        }
+
+        function updateStatus(text, type = 'normal') {
+            const status = document.getElementById('status');
+            status.textContent = text;
+            status.className = 'status' + (type === 'error' ? ' error' : '');
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function getUserData() {
+            const skills = document.getElementById('skills').value.split(',').map(s => s.trim());
+            const languages = document.getElementById('languages').value.split(',').map(s => s.trim());
+            const required_skills = document.getElementById('required_skills').value.split(',').map(s => s.trim());
+            
+            let chat_history = [];
+            try {
+                const historyText = document.getElementById('chat_history').value.trim();
+                if (historyText && historyText !== '[]') {
+                    chat_history = JSON.parse(historyText);
+                }
+            } catch (e) {
+                console.log('Invalid chat history JSON');
+            }
+
+            return {
+                user_details: {
+                    name: document.getElementById('name').value,
+                    experience_level: document.getElementById('experience').value,
+                    education: document.getElementById('education').value,
+                    skills: skills,
+                    country: document.getElementById('country').value,
+                    languages: languages
+                },
+                offer_details: {
+                    position: document.getElementById('position').value,
+                    company: document.getElementById('company').value,
+                    required_skills: required_skills,
+                    salary_range: document.getElementById('salary').value,
+                    location: document.getElementById('location').value
+                },
+                chat_history: chat_history
+            };
+        }
+
+        function sendMessage() {
+            const text = document.getElementById('messageInput').value.trim();
+            if (!text) return;
+
+            addMessage(text, true);
+            document.getElementById('messageInput').value = '';
+
+            updateStatus('Sending...');
+            showTyping();
+
+            const data = getUserData();
+            data.text = text;
+            data.session_id = sessionId;
+            data.mode = currentMode;
+
+            fetch(`${API_URL}/api/text-chat`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            })
+            .then(r => r.json())
+            .then(d => {
+                removeTyping();
+                if (d.success) {
+                    addMessage(d.ai_response, false);
+                    updateStatus('Ready to chat', 'success');
+                } else {
+                    addMessage(`❌ ${d.error}`, false);
+                    updateStatus(d.error, 'error');
+                }
+            })
+            .catch(e => {
+                removeTyping();
+                addMessage(`❌ ${e.message}`, false);
+                updateStatus(e.message, 'error');
+            });
+        }
+
+        async function toggleVoice() {
+            if (!isRecording) {
+                startVoice();
+            } else {
+                stopVoice();
+            }
+        }
+
+        async function startVoice() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                mediaRecorder = new MediaRecorder(stream);
+                audioChunks = [];
+                mediaRecorder.ondataavailable = e => audioChunks.push(e.data);
+                mediaRecorder.onstop = sendVoiceMessage;
+                mediaRecorder.start();
+                isRecording = true;
+                document.getElementById('voiceBtn').classList.add('recording');
+                updateStatus('🔴 Recording...');
+            } catch (e) {
+                updateStatus('Microphone error: ' + e.message, 'error');
+            }
+        }
+
+        function stopVoice() {
+            if (mediaRecorder && isRecording) {
+                mediaRecorder.stop();
+                isRecording = false;
+                document.getElementById('voiceBtn').classList.remove('recording');
+            }
+        }
+
+        function sendVoiceMessage() {
+            if (!audioChunks.length) return;
+
+            const blob = new Blob(audioChunks, { type: 'audio/webm' });
+            const formData = new FormData();
+            formData.append('audio', blob);
+            formData.append('session_id', sessionId);
+            formData.append('mode', currentMode);
+
+            const data = getUserData();
+            formData.append('user_details', JSON.stringify(data.user_details));
+            formData.append('offer_details', JSON.stringify(data.offer_details));
+
+            updateStatus('Processing voice...');
+            showTyping();
+
+            fetch(`${API_URL}/api/voice-chat`, {
+                method: 'POST',
+                body: formData
+            })
+            .then(r => r.json())
+            .then(d => {
+                removeTyping();
+                if (d.success) {
+                    addMessage(`🎤 You: ${d.transcribed_text}`, true);
+                    addMessage(d.ai_response, false);
+                    if (d.audio_response) {
+                        new Audio(`data:audio/webm;base64,${d.audio_response}`).play();
+                    }
+                    updateStatus('Ready to chat', 'success');
+                } else {
+                    addMessage(`❌ ${d.error}`, false);
+                    updateStatus(d.error, 'error');
+                }
+            })
+            .catch(e => {
+                removeTyping();
+                addMessage(`❌ ${e.message}`, false);
+                updateStatus(e.message, 'error');
+            });
+        }
+
+        // Auto-resize textarea
+        document.getElementById('messageInput').addEventListener('input', function() {
+            this.style.height = 'auto';
+            this.style.height = Math.min(this.scrollHeight, 100) + 'px';
+        });
+        
+        // Initialize
+        window.addEventListener('load', () => {
+            addSystemMessage('👋 Ready to start! Choose your mode and start practicing.');
+        });
+    </script>
+</body>
+</html>
+"""
+
+@app.route('/')
+def index():
+    return render_template_string(HTML_TEMPLATE)
 
 @app.route('/api/text-chat', methods=['POST'])
 def text_chat():
-    """Text chat endpoint - supports both coaching and employer_interview modes"""
     try:
         data = request.json
-        if not data:
-            return jsonify({"success": False, "error": "No JSON data received"}), 400
-        
-        text = data.get('text')
-        session_id = data.get('session_id', 'default_session')
+        text = data.get('text', '').strip()
+        session_id = data.get('session_id', 'default')
         mode = data.get('mode', 'coaching')
-        
         user_details = data.get('user_details', {})
         offer_details = data.get('offer_details', {})
+        chat_history = data.get('chat_history', [])
         
         if not text:
             return jsonify({"success": False, "error": "No text provided"}), 400
         
-        print(f"💬 {mode.upper()} Mode: {text}")
+        print(f"💬 {mode}: {text}")
         
-        detected_language = detect_language_from_text(text)
-        history = get_conversation_history(session_id, limit=10)
+        language = detect_language_from_text(text)
         
-        if mode == 'employer_interview':
-            system_prompt = build_employer_interview_prompt(user_details, offer_details, history)
-        else:
-            system_prompt = build_system_prompt(user_details, offer_details, history)
+        ai_response = get_ai_response(text, user_details, offer_details, chat_history, mode, language)
         
-        key_name = get_random_key()
-        
-        ai_response = get_context_aware_response(
-            text=text,
-            session_id=session_id,
-            language=detected_language,
-            system_prompt=system_prompt,
-            key_name=key_name
-        )
+        save_conversation(session_id, text, ai_response, language)
         
         return jsonify({
             "success": True,
             "ai_response": ai_response,
             "mode": mode,
-            "detected_language": detected_language,
+            "language": language,
             "session_id": session_id
         })
         
@@ -449,133 +976,73 @@ def text_chat():
 
 @app.route('/api/voice-chat', methods=['POST'])
 def voice_chat():
-    """Voice chat endpoint - transcribes audio and responds"""
     try:
         if 'audio' not in request.files:
-            return jsonify({"success": False, "error": "No audio file provided"}), 400
+            return jsonify({"success": False, "error": "No audio file"}), 400
         
         audio_file = request.files['audio']
-        session_id = request.form.get('session_id', 'default_session')
+        session_id = request.form.get('session_id', 'default')
         mode = request.form.get('mode', 'coaching')
         
-        user_details = json.loads(request.form.get('user_details', '{}'))
-        offer_details = json.loads(request.form.get('offer_details', '{}'))
+        try:
+            user_details = json.loads(request.form.get('user_details', '{}'))
+            offer_details = json.loads(request.form.get('offer_details', '{}'))
+        except:
+            user_details, offer_details = {}, {}
         
-        if not audio_file:
-            return jsonify({"success": False, "error": "No audio data"}), 400
-        
-        print(f"🎤 Voice chat received ({len(audio_file.read())} bytes)")
-        audio_file.seek(0)
         audio_bytes = audio_file.read()
         
-        # Step 1: Transcribe audio
+        print(f"🎤 Voice received ({len(audio_bytes)} bytes)")
+        
+        # Step 1: Transcribe
         transcribed_text, detected_language = transcribe_with_gemini(audio_bytes, "audio/webm")
         print(f"✅ Transcribed: {transcribed_text}")
         
-        if not transcribed_text or "Error" in transcribed_text or "Could" in transcribed_text:
+        if "error" in transcribed_text.lower() or "could" in transcribed_text.lower():
             return jsonify({
                 "success": False,
-                "error": transcribed_text,
-                "detected_language": detected_language
+                "error": transcribed_text
             }), 400
         
-        # Step 2: Build system prompt based on mode
-        history = get_conversation_history(session_id, limit=10)
-        
-        if mode == 'employer_interview':
-            system_prompt = build_employer_interview_prompt(user_details, offer_details, history)
-        else:
-            system_prompt = build_system_prompt(user_details, offer_details, history)
+        # Step 2: Get chat history
+        chat_history = get_conversation_history(session_id)
         
         # Step 3: Get AI response
-        key_name = get_random_key()
-        ai_response = get_context_aware_response(
-            text=transcribed_text,
-            session_id=session_id,
-            language=detected_language,
-            system_prompt=system_prompt,
-            key_name=key_name
-        )
+        ai_response = get_ai_response(transcribed_text, user_details, offer_details, chat_history, mode, detected_language)
         
-        # Step 4: Convert response to speech
-        audio_response_b64 = text_to_speech(ai_response, detected_language)
+        save_conversation(session_id, transcribed_text, ai_response, detected_language)
+        
+        # Step 4: TTS
+        audio_response = text_to_speech(ai_response, detected_language)
         
         return jsonify({
             "success": True,
             "transcribed_text": transcribed_text,
             "ai_response": ai_response,
-            "audio_response": audio_response_b64,
-            "mode": mode,
-            "detected_language": detected_language,
+            "audio_response": audio_response,
+            "language": detected_language,
             "session_id": session_id
         })
         
     except Exception as e:
-        print(f"❌ Voice chat error: {e}")
+        print(f"❌ Voice error: {e}")
         import traceback
         traceback.print_exc()
         return jsonify({"success": False, "error": str(e)}), 500
 
-@app.route('/api/context/save', methods=['POST'])
-def save_context():
-    """Save user and offer context to session"""
-    try:
-        data = request.json
-        session_id = data.get('session_id')
-        user_details = data.get('user_details', {})
-        offer_details = data.get('offer_details', {})
-        
-        if not session_id:
-            return jsonify({"success": False, "error": "Session ID required"}), 400
-        
-        conn = sqlite3.connect(DATABASE_FILE)
-        c = conn.cursor()
-        
-        c.execute("INSERT OR REPLACE INTO session_context VALUES (?, ?, ?, ?, ?)",
-                  (session_id, json.dumps(user_details), json.dumps(offer_details), 
-                   '[]', datetime.now()))
-        
-        conn.commit()
-        conn.close()
-        
-        print(f"✅ Context saved for session {session_id}")
-        
-        return jsonify({
-            "success": True,
-            "message": "Context saved successfully",
-            "session_id": session_id
-        })
-        
-    except Exception as e:
-        print(f"❌ Save context error: {e}")
-        return jsonify({"success": False, "error": str(e)}), 500
-
-@app.route('/')
-def index():
-    """Simple home page"""
-    return """
-    <html>
-    <head><title>Talleb 5edma - Interview Coach API</title></head>
-    <body style="font-family: Arial; margin: 40px;">
-        <h1>🎙️ Talleb 5edma - Interview Coaching API</h1>
-        <p>✅ API is running and ready to receive requests</p>
-        <h3>Endpoints:</h3>
-        <ul>
-            <li><strong>GET /health</strong> - Check API status</li>
-            <li><strong>POST /api/text-chat</strong> - Send text message</li>
-            <li><strong>POST /api/voice-chat</strong> - Send audio file</li>
-            <li><strong>POST /api/context/save</strong> - Save user context</li>
-        </ul>
-        <p><strong>Modes supported:</strong> coaching, employer_interview</p>
-    </body>
-    </html>
-    """
+@app.route('/health', methods=['GET'])
+def health():
+    return jsonify({
+        "status": "active",
+        "keys": len(gemini_clients),
+        "endpoints": ["/", "/api/text-chat", "/api/voice-chat"]
+    })
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     print(f"🚀 Starting Talleb 5edma - Interview Coaching")
     print(f"🚀 Port: {port}")
-    print(f"🔑 Active API Keys: {len(gemini_clients)}")
-    print(f"📊 Total RPD Capacity: {len(gemini_clients) * 20}")
-    print(f"🧠 Features: Text Chat + Voice Chat + Employer Mode")
+    print(f"🔑 Active Keys: {len(gemini_clients)}")
+    print(f"📍 Open: http://localhost:{port}")
+    print(f"🧠 Features: Text + Voice Chat + Conversation Memory")
     app.run(host='0.0.0.0', port=port, debug=False)
