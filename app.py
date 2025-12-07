@@ -76,23 +76,12 @@ def transcribe_with_gemini(audio_bytes, mime_type="audio/webm"):
     try:
         print(f"🎤 Transcribing with Gemini ({len(audio_bytes)} bytes, {mime_type})...")
         
-        prompt = """Transcribe this speech to text. IMPORTANT INSTRUCTIONS:
-1. Detect the language accurately (especially for Arabic, Chinese, Japanese, Korean)
-2. If the speech is in Arabic, transcribe it carefully with proper Arabic script
-3. For any language, transcribe exactly what you hear
-4. Provide ONLY a JSON response with this exact format:
-{
-    "text": "the transcribed text here",
-    "language": "language code (en, es, fr, ar, zh, ja, ko, ru, etc.)",
-    "confidence": 0.95
-}
+        prompt = """Listen to this audio and transcribe the speech to text.
+Detect the language and return ONLY a valid JSON response:
+{"text": "transcribed text", "language": "en", "confidence": 0.95}
 
-If you cannot understand anything, return:
-{
-    "text": "",
-    "language": "unknown",
-    "confidence": 0.0
-}"""
+Language codes: en, es, fr, ar, zh, ja, ko, ru, de, it, pt, hi
+If you cannot understand, return: {"text": "", "language": "unknown", "confidence": 0.0}"""
         
         response = client.models.generate_content(
             model="gemini-2.5-flash",
@@ -105,53 +94,85 @@ If you cannot understand anything, return:
             ],
             config=types.GenerateContentConfig(
                 temperature=0.1,
-                max_output_tokens=150
+                max_output_tokens=2048,
+                safety_settings=[
+                    types.SafetySetting(
+                        category="HARM_CATEGORY_HARASSMENT",
+                        threshold="BLOCK_NONE"
+                    ),
+                    types.SafetySetting(
+                        category="HARM_CATEGORY_HATE_SPEECH",
+                        threshold="BLOCK_NONE"
+                    ),
+                    types.SafetySetting(
+                        category="HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                        threshold="BLOCK_NONE"
+                    ),
+                    types.SafetySetting(
+                        category="HARM_CATEGORY_DANGEROUS_CONTENT",
+                        threshold="BLOCK_NONE"
+                    ),
+                ]
             )
         )
         
-        result_text = response.text.strip()
+        # Check if response is empty
+        if not response or not hasattr(response, 'candidates') or not response.candidates:
+            print(f"⚠️ Empty response from Gemini transcription")
+            return "Could not transcribe audio. Please try again.", "en"
+        
+        # Try to get text from response
+        result_text = None
+        if hasattr(response, 'text') and response.text:
+            result_text = response.text.strip()
+        elif response.candidates and len(response.candidates) > 0:
+            candidate = response.candidates[0]
+            if hasattr(candidate, 'content') and candidate.content:
+                if hasattr(candidate.content, 'parts') and candidate.content.parts:
+                    result_text = candidate.content.parts[0].text.strip()
+        
+        if not result_text:
+            print(f"⚠️ No text in transcription response")
+            return "Could not transcribe audio. Please try again.", "en"
+        
         print(f"📝 Gemini raw response: {result_text}")
         
         # Clean markdown code blocks
-        if "json" in result_text and result_text.count('`') >= 6:
-            # Remove `````` markers
-            result_text = result_text.replace('``````', '').strip()
-        elif result_text.count('`') >= 6:
-            # Remove ```
-            result_text = result_text.replace('```', '').strip()
+        if "json" in result_text.lower() and '`' in result_text:
+            result_text = result_text.replace('```json', '').replace('```', '').strip()
         
+        # Parse JSON
         try:
             result = json.loads(result_text)
             text = result.get("text", "").strip()
             language = result.get("language", "unknown")
             confidence = result.get("confidence", 0)
             
-            if confidence > 0.1 or text:
+            if confidence > 0.1 and text:
                 print(f"✅ Transcribed ({language}, confidence: {confidence}): {text}")
-                
                 if language == "unknown" and text:
                     language = detect_language_from_text(text)
-                
                 return text, language
             else:
-                print(f"⚠️ Low confidence transcription")
                 return "Could you please repeat that more clearly?", "en"
                 
-        except json.JSONDecodeError:
-            print(f"⚠️ Could not parse JSON, extracting text from: {result_text}")
+        except json.JSONDecodeError as e:
+            print(f"⚠️ JSON parsing failed: {e}")
+            print(f"⚠️ Result text: {result_text}")
             
-            if "text" in result_text.lower():
-                import re
-                text_match = re.search(r'"text"\s*:\s*"([^"]+)"', result_text)
-                lang_match = re.search(r'"language"\s*:\s*"([^"]+)"', result_text)
-                
-                if text_match:
-                    text = text_match.group(1)
-                    language = lang_match.group(1) if lang_match else detect_language_from_text(text)
-                    return text, language
+            # Try regex extraction
+            import re
+            text_match = re.search(r'"text"\s*:\s*"([^"]+)"', result_text)
+            lang_match = re.search(r'"language"\s*:\s*"([^"]+)"', result_text)
             
-            language = detect_language_from_text(result_text)
-            return result_text[:200], language
+            if text_match:
+                text = text_match.group(1)
+                language = lang_match.group(1) if lang_match else detect_language_from_text(text)
+                print(f"✅ Extracted via regex: {text} ({language})")
+                return text, language
+            
+            # Last resort
+            return "Could not understand the audio. Please try again.", "en"
             
     except Exception as e:
         print(f"❌ Gemini transcription error: {e}")
@@ -237,7 +258,7 @@ def get_conversation_history(session_id, limit=5):
 def get_ai_response(text, session_id="default", language='en'):
     """Get response from Gemini 2.5 Flash"""
     if not GEMINI_API_KEY:
-        return "AI service is not configured. Please set GEMINI_API_KEY environment variable.", language
+        return "AI service is not configured.", language
     
     history = get_conversation_history(session_id)
     
@@ -248,109 +269,69 @@ def get_ai_response(text, session_id="default", language='en'):
         context += "\n"
     
     language_prompts = {
-        'en': "Respond conversationally in 1-3 sentences as a helpful voice assistant.",
-        'es': "Responde de manera conversacional en 1-3 frases como un asistente de voz útil.",
-        'fr': "Répondez de manière conversationnelle en 1-3 phrases comme un assistant vocal utile.",
-        'ar': "رد بطريقة محادثة طبيعية في 1-3 جملة كمساعد صوتي مفيد. تحدث باللغة العربية الفصحى.",
-        'de': "Antworten Sie konversationell in 1-3 Sätzen als hilfreicher Sprachassistent.",
-        'it': "Rispondi conversazionalmente in 1-3 frasi come un assistente vocale utile.",
-        'ja': "役立つ音声アシスタントとして、1〜3文で会話形式で答えてください。",
-        'ko': "유용한 음성 비서로서 1~3문장으로 대화식으로 응답하세요.",
-        'zh': "以有用的语音助手身份，用1-3句话进行对话式回答。",
-        'hi': "एक मददगार आवाज सहायक के रूप में 1-3 वाक्यों में बातचीत के तरीके से जवाब दें।",
-        'ru': "Отвечайте разговорным тоном в 1-3 предложениях в качестве полезного голосового помощника.",
-        'pt': "Responda conversacionalmente em 1-3 frases como um assistente de voz útil.",
+        'en': "Respond in English in 1-3 sentences.",
+        'es': "Responde en español en 1-3 frases.",
+        'fr': "Répondez en français en 1-3 phrases.",
+        'ar': "رد بالعربية في 1-3 جمل.",
+        'de': "Antworten Sie auf Deutsch in 1-3 Sätzen.",
+        'it': "Rispondi in italiano in 1-3 frasi.",
+        'ja': "日本語で1〜3文で答えてください。",
+        'ko': "한국어로 1~3문장으로 답하세요.",
+        'zh': "用中文回答1-3句话。",
+        'hi': "हिंदी में 1-3 वाक्यों में उत्तर दें।",
+        'ru': "Ответьте на русском в 1-3 предложениях.",
+        'pt': "Responda em português em 1-3 frases.",
     }
     
     instruction = language_prompts.get(language, language_prompts['en'])
-    
-    full_prompt = f"""{context}User: {text}
-
-{instruction}
-IMPORTANT: Respond ONLY in {language} language. Keep it natural and conversational."""
+    full_prompt = f"{context}User: {text}\n{instruction}"
     
     try:
-        print(f"📤 Sending to Gemini: {full_prompt[:200]}...")
+        print(f"📤 Sending to Gemini: {full_prompt[:150]}...")
         
         response = client.models.generate_content(
             model="gemini-2.5-flash",
             contents=full_prompt,
             config=types.GenerateContentConfig(
                 temperature=0.7,
-                max_output_tokens=150,
+                max_output_tokens=2048,
                 safety_settings=[
-                    types.SafetySetting(
-                        category="HARM_CATEGORY_HARASSMENT",
-                        threshold="BLOCK_NONE"
-                    ),
-                    types.SafetySetting(
-                        category="HARM_CATEGORY_HATE_SPEECH",
-                        threshold="BLOCK_NONE"
-                    ),
-                    types.SafetySetting(
-                        category="HARM_CATEGORY_SEXUALLY_EXPLICIT",
-                        threshold="BLOCK_NONE"
-                    ),
-                    types.SafetySetting(
-                        category="HARM_CATEGORY_DANGEROUS_CONTENT",
-                        threshold="BLOCK_NONE"
-                    ),
+                    types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_NONE"),
+                    types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="BLOCK_NONE"),
+                    types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="BLOCK_NONE"),
+                    types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_NONE"),
                 ]
             )
         )
         
-        print(f"📦 Response object: {response}")
-        print(f"📦 Response candidates: {response.candidates if hasattr(response, 'candidates') else 'N/A'}")
-        
-        if hasattr(response, 'prompt_feedback'):
-            print(f"⚠️ Prompt feedback: {response.prompt_feedback}")
-            if hasattr(response.prompt_feedback, 'block_reason'):
-                print(f"🚫 Blocked reason: {response.prompt_feedback.block_reason}")
+        # Extract text with multiple fallbacks
+        ai_text = None
         
         if response and hasattr(response, 'text') and response.text:
             ai_text = response.text.strip()
-            print(f"✅ Gemini response ({language}): {ai_text[:100]}...")
         elif response and hasattr(response, 'candidates') and response.candidates:
             candidate = response.candidates[0]
-            print(f"📋 Candidate: {candidate}")
             if hasattr(candidate, 'content') and candidate.content:
                 if hasattr(candidate.content, 'parts') and candidate.content.parts:
-                    ai_text = candidate.content.parts[0].text.strip()
-                    print(f"✅ Extracted from candidate ({language}): {ai_text[:100]}...")
-                else:
-                    print(f"⚠️ No parts in candidate content")
-                    ai_text = "I'm having trouble generating a response. Please try again."
-            else:
-                print(f"⚠️ No content in candidate")
-                ai_text = "I'm having trouble generating a response. Please try again."
+                    if hasattr(candidate.content.parts[0], 'text'):
+                        ai_text = candidate.content.parts[0].text.strip()
+        
+        if ai_text:
+            print(f"✅ Gemini response ({language}): {ai_text[:100]}...")
         else:
-            print(f"⚠️ Empty response from Gemini - Response: {response}")
-            ai_text = "I heard you, but I'm having trouble responding right now. Could you rephrase that?"
+            print(f"⚠️ Empty response from Gemini")
+            print(f"Response: {response}")
+            if hasattr(response, 'candidates'):
+                print(f"Candidates: {response.candidates}")
+            ai_text = "Sorry, I couldn't generate a response. Please try again."
             
     except Exception as e:
         print(f"❌ Gemini API error: {e}")
-        print(f"❌ Error type: {type(e).__name__}")
         import traceback
         traceback.print_exc()
-        
-        fallback_responses = {
-            'en': "I'm having trouble connecting to my AI service right now. Please try again in a moment.",
-            'es': "Estoy teniendo problemas para conectarme a mi servicio de IA en este momento. Por favor, inténtalo de nuevo en un momento.",
-            'fr': "J'ai du mal à me connecter à mon service d'IA pour le moment. Veuillez réessayer dans un instant.",
-            'ar': "أواجه صعوبة في الاتصال بخدمة الذكاء الاصطناعي الخاصة بي في الوقت الحالي. يرجى المحاولة مرة أخرى في لحظة.",
-            'de': "Ich habe gerade Probleme, mich mit meinem KI-Dienst zu verbinden. Bitte versuchen Sie es in einem Moment erneut.",
-            'ja': "現在、AIサービスに接続するのに問題が発生しています。しばらくしてからもう一度お試しください。",
-            'ko': "현재 AI 서비스에 연결하는 데 문제가 있습니다. 잠시 후 다시 시도해 주세요.",
-            'zh': "我目前连接AI服务时遇到问题。请稍后再试。",
-            'hi': "मुझे अभी अपनी AI सेवा से कनेक्ट होने में परेशानी हो रही है। कृपया एक पल में फिर से प्रयास करें।",
-            'ru': "У меня возникли проблемы с подключением к моему сервису ИИ. Пожалуйста, попробуйте еще раз через мгновение.",
-            'pt': "Estou tendo problemas para me conectar ao meu serviço de IA no momento. Por favor, tente novamente em um momento.",
-            'it': "Sto avendo problemi a connettermi al mio servizio di IA in questo momento. Per favore, riprova tra un momento.",
-        }
-        ai_text = fallback_responses.get(language, fallback_responses['en'])
+        ai_text = "I'm having trouble connecting right now. Please try again."
     
     save_conversation(session_id, text, ai_text, language)
-    
     return ai_text, language
 
 # ========== TEXT-TO-SPEECH ==========
@@ -642,7 +623,7 @@ def index():
             <p><strong>Status:</strong> ✅ Active</p>
             <p><strong>Speech Recognition:</strong> ✅ Gemini-native</p>
             <p><strong>Multilingual:</strong> ✅ Auto-detection</p>
-            <p><strong>Arabic Support:</strong> ✅ Improved</p>
+            <p><strong>Fix:</strong> ✅ Max tokens increased to 2048</p>
         </div>
         
         <div class="status {'warning' if not GEMINI_API_KEY else ''}">
@@ -718,5 +699,5 @@ if __name__ == '__main__':
     print(f"🤖 Using Gemini 2.5 Flash for speech recognition")
     print(f"🌍 Supports {len(LANGUAGE_MAPPING)} languages with auto-detection")
     print(f"🎤 Speech-to-text: Gemini-native")
-    print(f"⚠️ Note: Using simplified audio processing for Python 3.13 compatibility")
+    print(f"⚠️ Fix applied: max_output_tokens increased to 2048")
     app.run(host='0.0.0.0', port=port, debug=False)
