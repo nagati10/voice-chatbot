@@ -1,4 +1,3 @@
-# Remove pydub import and replace with alternative approach
 import io
 import os
 import wave
@@ -532,416 +531,180 @@ def clear_history():
 
 @app.route('/')
 def index():
-    """Homepage with embedded UI"""
+    """Homepage"""
     stt_status = "✅ Configured" if GEMINI_STT_KEY else "❌ Not Configured"
     api_status = "✅ Configured" if GEMINI_API_KEY else "❌ Not Configured"
     return f"""
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
+    <title>Gemini Voice AI Chatbot</title>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>🎙️ Gemini Voice AI Chatbot</title>
     <style>
-        * {{
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }}
         body {{
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+            padding: 40px;
+            max-width: 900px;
+            margin: 0 auto;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             min-height: 100vh;
-            padding: 20px;
-            color: #333;
         }}
         .container {{
-            max-width: 1000px;
-            margin: 0 auto;
-        }}
-        .header {{
             background: white;
-            padding: 30px;
+            padding: 40px;
             border-radius: 15px;
-            margin-bottom: 20px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
         }}
-        .header h1 {{
-            margin-bottom: 10px;
+        h1 {{
             color: #333;
-        }}
-        .header p {{
-            color: #666;
-            font-size: 16px;
-        }}
-        .status-box {{
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 20px;
-            margin-top: 20px;
+            margin-bottom: 10px;
         }}
         .status {{
-            padding: 15px;
-            border-radius: 10px;
-            font-size: 14px;
-            line-height: 1.6;
-        }}
-        .status.success {{
             background: #e8f5e9;
-            border-left: 4px solid #4caf50;
+            padding: 20px;
+            border-radius: 10px;
+            margin: 20px 0;
+            border-left: 5px solid #4caf50;
         }}
         .status.warning {{
             background: #fff3cd;
-            border-left: 4px solid #ffc107;
+            border-left-color: #ffc107;
         }}
-        .main-content {{
+        .languages-grid {{
             display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 20px;
-        }}
-        .card {{
-            background: white;
-            padding: 25px;
-            border-radius: 15px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
-        }}
-        .card h2 {{
-            margin-bottom: 20px;
-            color: #333;
-            font-size: 20px;
-        }}
-        .input-group {{
-            display: flex;
-            flex-direction: column;
-            gap: 15px;
-        }}
-        textarea, input {{
-            padding: 12px;
-            border: 2px solid #e0e0e0;
-            border-radius: 8px;
-            font-family: inherit;
-            font-size: 14px;
-            resize: vertical;
-        }}
-        textarea:focus, input:focus {{
-            outline: none;
-            border-color: #667eea;
-            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
-        }}
-        .button-group {{
-            display: flex;
+            grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
             gap: 10px;
-            flex-wrap: wrap;
+            margin: 20px 0;
         }}
-        button {{
-            flex: 1;
-            padding: 12px 20px;
-            border: none;
-            border-radius: 8px;
-            font-size: 14px;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.3s ease;
-            min-width: 140px;
-        }}
-        .btn-primary {{
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-        }}
-        .btn-primary:hover {{
-            transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
-        }}
-        .btn-primary:active {{
-            transform: translateY(0);
-        }}
-        .btn-secondary {{
-            background: #f0f0f0;
-            color: #333;
-        }}
-        .btn-secondary:hover {{
-            background: #e0e0e0;
-        }}
-        .btn-danger {{
-            background: #ff6b6b;
-            color: white;
-        }}
-        .btn-danger:hover {{
-            background: #ff5252;
-        }}
-        .output {{
-            margin-top: 15px;
-            padding: 15px;
-            background: #f5f5f5;
-            border-radius: 8px;
-            min-height: 60px;
-            border-left: 4px solid #667eea;
-        }}
-        .output.hidden {{
-            display: none;
-        }}
-        .output-label {{
-            font-weight: 600;
-            color: #333;
-            margin-bottom: 8px;
-        }}
-        .output-text {{
-            color: #666;
-            word-wrap: break-word;
-        }}
-        .loading {{
-            color: #667eea;
-            font-style: italic;
-        }}
-        .error {{
-            color: #d32f2f;
-        }}
-        .success {{
-            color: #388e3c;
-        }}
-        audio {{
-            width: 100%;
-            margin-top: 10px;
-        }}
-        #recordingStatus {{
-            display: inline-block;
+        .language-tag {{
+            background: #e3f2fd;
             padding: 8px 12px;
             border-radius: 20px;
-            font-size: 12px;
-            font-weight: 600;
-            margin-top: 10px;
+            text-align: center;
+            font-size: 14px;
+            border: 1px solid #bbdefb;
         }}
-        #recordingStatus.recording {{
-            background: #ffebee;
-            color: #d32f2f;
+        .endpoint {{
+            background: #f5f5f5;
+            padding: 15px;
+            margin: 15px 0;
+            border-left: 4px solid #2196F3;
+            font-family: 'Courier New', monospace;
+            border-radius: 5px;
         }}
-        #recordingStatus.ready {{
-            background: #e8f5e9;
-            color: #388e3c;
+        button {{
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 12px 30px;
+            border-radius: 50px;
+            font-size: 16px;
+            cursor: pointer;
+            margin: 10px 5px;
+            transition: transform 0.2s;
         }}
-        @media (max-width: 768px) {{
-            .main-content {{
-                grid-template-columns: 1fr;
-            }}
-            .status-box {{
-                grid-template-columns: 1fr;
-            }}
+        button:hover {{
+            transform: scale(1.05);
+        }}
+        #testResult {{
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 10px;
+            background: #f5f5f5;
+            min-height: 60px;
+        }}
+        .success {{
+            color: #4caf50;
+        }}
+        .error {{
+            color: #f44336;
         }}
     </style>
 </head>
 <body>
     <div class="container">
-        <div class="header">
-            <h1>🎙️ Gemini Voice AI Chatbot</h1>
-            <p>Real-time multilingual voice and text chat powered by Gemini 2.5 Flash</p>
-            <div class="status-box">
-                <div class="status success">
-                    <strong>Speech-to-Text (GEMINI_STT):</strong> {stt_status}<br>
-                    <strong>Conversation (GEMINI_API_KEY):</strong> {api_status}<br>
-                    <strong>Languages:</strong> 14 supported
-                </div>
-                <div class="status" id="connectionStatus">
-                    <strong>Testing connection...</strong>
-                </div>
-            </div>
+        <h1>🎙️ Gemini Voice AI Chatbot</h1>
+        <p style="color: #666;">Real-time Speech-to-Speech using Gemini 2.5 Flash</p>
+        
+        <div class="status">
+            <p><strong>Status:</strong> ✅ Active</p>
+            <p><strong>Dual API Keys:</strong> ✅ Separate quotas for STT & API</p>
+            <p><strong>Multilingual:</strong> ✅ Auto-detection</p>
+            <p><strong>Architecture:</strong> ✅ Optimized for scalability</p>
         </div>
-
-        <div class="main-content">
-            <div class="card">
-                <h2>🎤 Voice Chat</h2>
-                <div class="input-group">
-                    <label>Click to record (auto-detect language):</label>
-                    <button class="btn-primary" id="recordBtn" onclick="startRecording()">🎤 Start Recording</button>
-                    <div id="recordingStatus" class="hidden"></div>
-                    <div id="transcriptOutput" class="output hidden">
-                        <div class="output-label">Transcribed Text:</div>
-                        <div class="output-text" id="transcriptText"></div>
-                    </div>
-                    <div id="voiceResponseOutput" class="output hidden">
-                        <div class="output-label">AI Response:</div>
-                        <div class="output-text" id="voiceResponseText"></div>
-                        <audio id="responseAudio" controls></audio>
-                    </div>
-                </div>
-            </div>
-
-            <div class="card">
-                <h2>💬 Text Chat</h2>
-                <div class="input-group">
-                    <textarea id="userText" placeholder="Type your message here..." rows="4"></textarea>
-                    <button class="btn-primary" onclick="sendText()">Send Message</button>
-                    <div id="textResponseOutput" class="output hidden">
-                        <div class="output-label">AI Response:</div>
-                        <div class="output-text" id="textResponseText"></div>
-                    </div>
-                </div>
-            </div>
+        
+        <div class="status {'warning' if not GEMINI_STT_KEY or not GEMINI_API_KEY else ''}">
+            <p><strong>Speech-to-Text (GEMINI_STT):</strong> {stt_status}</p>
+            <p><strong>Conversation (GEMINI_API_KEY):</strong> {api_status}</p>
         </div>
-
-        <div class="card" style="margin-top: 20px;">
-            <h2>⚙️ Settings</h2>
-            <div class="button-group">
-                <button class="btn-secondary" onclick="testHealth()">🔗 Test Connection</button>
-                <button class="btn-secondary" onclick="clearHistory()">🗑️ Clear History</button>
-                <button class="btn-danger" onclick="location.reload()">🔄 Reload Page</button>
-            </div>
+        
+        <h3>✨ Supported Languages (Auto-detected)</h3>
+        <div class="languages-grid">
+            <div class="language-tag">English</div>
+            <div class="language-tag">Spanish</div>
+            <div class="language-tag">French</div>
+            <div class="language-tag">Arabic</div>
+            <div class="language-tag">German</div>
+            <div class="language-tag">Italian</div>
+            <div class="language-tag">Japanese</div>
+            <div class="language-tag">Korean</div>
+            <div class="language-tag">Chinese</div>
+            <div class="language-tag">Hindi</div>
+            <div class="language-tag">Russian</div>
+            <div class="language-tag">Portuguese</div>
         </div>
+        
+        <h2>API Endpoints</h2>
+        <div class="endpoint"><strong>POST</strong> /api/voice-chat - Voice chat with auto language detection</div>
+        <div class="endpoint"><strong>POST</strong> /api/text-chat - Text chat (uses conversation API only)</div>
+        <div class="endpoint"><strong>POST</strong> /api/clear-history - Clear history</div>
+        <div class="endpoint"><strong>GET</strong> /health - Health check</div>
+        
+        <h3>Dual API Key Architecture</h3>
+        <ul>
+            <li>🎤 <strong>GEMINI_STT:</strong> Speech-to-text transcription (20 req/day free tier)</li>
+            <li>💬 <strong>GEMINI_API_KEY:</strong> Conversation responses (20 req/day free tier)</li>
+            <li>✅ Separate quota management for each service</li>
+            <li>✅ Scale each service independently</li>
+        </ul>
+        
+        <h3>Features</h3>
+        <ul>
+            <li>✅ Speech-to-text using Gemini 2.5 Flash (STT key)</li>
+            <li>✅ Automatic language detection from audio</li>
+            <li>✅ Improved multilingual support</li>
+            <li>✅ AI responses using dedicated API key</li>
+            <li>✅ Text-to-speech with gTTS</li>
+            <li>✅ Conversation memory</li>
+            <li>✅ Independent quota scaling</li>
+        </ul>
+        
+        <button onclick="testHealth()">Test Health</button>
+        <div id="testResult"></div>
     </div>
-
+    
     <script>
-        let mediaRecorder;
-        let audioChunks = [];
-        let isRecording = false;
-        let sessionId = Math.random().toString(36).substr(2, 9);
-
-        // Test connection on load
-        window.addEventListener('load', testHealth);
-
         async function testHealth() {{
+            const result = document.getElementById('testResult');
+            result.innerHTML = '<div style="color: orange;">Checking...</div>';
+            
             try {{
                 const response = await fetch('/health');
                 const data = await response.json();
-                const statusEl = document.getElementById('connectionStatus');
-                const sttStatus = data.stt_configured ? '✅' : '❌';
-                const apiStatus = data.api_configured ? '✅' : '❌';
-                statusEl.innerHTML = `
-                    <strong>✅ Backend Connected</strong><br>
-                    STT Key: ${{sttStatus}}<br>
-                    API Key: ${{apiStatus}}<br>
-                    Languages: ${{data.supported_languages.length}}
-                `;
-                statusEl.className = 'status success';
+                result.innerHTML = `<div class="success">
+                    <strong>✅ Healthy!</strong><br>
+                    STT (GEMINI_STT): ${{data.stt_configured ? '✅' : '❌'}}<br>
+                    API (GEMINI_API_KEY): ${{data.api_configured ? '✅' : '❌'}}<br>
+                    Languages: ${{data.supported_languages.length}}<br>
+                    Speech Recognition: Gemini-native
+                </div>`;
             }} catch (error) {{
-                const statusEl = document.getElementById('connectionStatus');
-                statusEl.innerHTML = `<strong>❌ Connection Failed</strong><br>${{error.message}}`;
-                statusEl.className = 'status warning';
+                result.innerHTML = `<div class="error"><strong>❌ Failed:</strong> ${{error.message}}</div>`;
             }}
         }}
-
-        async function startRecording() {{
-            if (!isRecording) {{
-                const stream = await navigator.mediaDevices.getUserMedia({{ audio: true }});
-                mediaRecorder = new MediaRecorder(stream);
-                audioChunks = [];
-
-                mediaRecorder.ondataavailable = (event) => {{
-                    audioChunks.push(event.data);
-                }};
-
-                mediaRecorder.onstop = sendAudio;
-
-                mediaRecorder.start();
-                isRecording = true;
-
-                const recordBtn = document.getElementById('recordBtn');
-                recordBtn.textContent = '⏹️ Stop Recording';
-                recordBtn.style.background = '#ff6b6b';
-
-                const statusEl = document.getElementById('recordingStatus');
-                statusEl.textContent = '🔴 Recording...';
-                statusEl.className = 'recording';
-                statusEl.classList.remove('hidden');
-            }} else {{
-                mediaRecorder.stop();
-                isRecording = false;
-
-                const recordBtn = document.getElementById('recordBtn');
-                recordBtn.textContent = '🎤 Start Recording';
-                recordBtn.style.background = '';
-
-                const statusEl = document.getElementById('recordingStatus');
-                statusEl.textContent = '⏳ Processing...';
-                statusEl.className = '';
-            }}
-        }}
-
-        async function sendAudio() {{
-            const audioBlob = new Blob(audioChunks, {{ type: 'audio/webm' }});
-            const reader = new FileReader();
-
-            reader.onload = async () => {{
-                const audioBase64 = reader.result.split(',')[1];
-
-                try {{
-                    const response = await fetch('/api/voice-chat', {{
-                        method: 'POST',
-                        headers: {{ 'Content-Type': 'application/json' }},
-                        body: JSON.stringify({{
-                            audio: audioBase64,
-                            session_id: sessionId
-                        }})
-                    }});
-
-                    const data = await response.json();
-
-                    if (data.success) {{
-                        document.getElementById('transcriptText').textContent = data.user_text;
-                        document.getElementById('transcriptOutput').classList.remove('hidden');
-
-                        document.getElementById('voiceResponseText').textContent = data.ai_response;
-                        document.getElementById('responseAudio').src = 'data:audio/mp3;base64,' + data.audio;
-                        document.getElementById('voiceResponseOutput').classList.remove('hidden');
-                    }} else {{
-                        alert('Error: ' + data.error);
-                    }}
-                }} catch (error) {{
-                    alert('Network error: ' + error.message);
-                }} finally {{
-                    const statusEl = document.getElementById('recordingStatus');
-                    statusEl.classList.add('hidden');
-                }}
-            }};
-
-            reader.readAsDataURL(audioBlob);
-        }}
-
-        async function sendText() {{
-            const text = document.getElementById('userText').value.trim();
-            if (!text) {{
-                alert('Please enter some text');
-                return;
-            }}
-
-            try {{
-                const response = await fetch('/api/text-chat', {{
-                    method: 'POST',
-                    headers: {{ 'Content-Type': 'application/json' }},
-                    body: JSON.stringify({{
-                        text: text,
-                        session_id: sessionId
-                    }})
-                }});
-
-                const data = await response.json();
-
-                if (data.success) {{
-                    document.getElementById('textResponseText').textContent = data.ai_response;
-                    document.getElementById('textResponseOutput').classList.remove('hidden');
-                    document.getElementById('userText').value = '';
-                }} else {{
-                    alert('Error: ' + data.error);
-                }}
-            }} catch (error) {{
-                alert('Network error: ' + error.message);
-            }}
-        }}
-
-        async function clearHistory() {{
-            if (!confirm('Clear conversation history?')) return;
-
-            try {{
-                const response = await fetch('/api/clear-history', {{
-                    method: 'POST',
-                    headers: {{ 'Content-Type': 'application/json' }},
-                    body: JSON.stringify({{ session_id: sessionId }})
-                }});
-
-                const data = await response.json();
-                alert(data.message);
-            }} catch (error) {{
-                alert('Error: ' + error.message);
-            }}
-        }}
+        
+        window.addEventListener('load', testHealth);
     </script>
 </body>
 </html>
