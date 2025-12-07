@@ -16,8 +16,9 @@ from gtts import gTTS
 app = Flask(__name__)
 CORS(app)
 
-# ========== CONFIG ==========
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+# ========== CONFIG - DUAL API KEYS ==========
+GEMINI_STT_KEY = os.getenv("GEMINI_STT")  # For Speech-to-Text (transcription)
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")  # For conversation/AI responses
 DATABASE_FILE = "conversations.db"
 
 # Language code mapping for gTTS
@@ -38,13 +39,19 @@ LANGUAGE_MAPPING = {
     'hi': 'hi',    # Hindi
 }
 
+if not GEMINI_STT_KEY:
+    print("⚠️ WARNING: GEMINI_STT not set!")
+else:
+    print("✅ GEMINI_STT is configured")
+
 if not GEMINI_API_KEY:
     print("⚠️ WARNING: GEMINI_API_KEY not set!")
 else:
     print("✅ GEMINI_API_KEY is configured")
 
-# Initialize Gemini client
-client = genai.Client(api_key=GEMINI_API_KEY)
+# Initialize Gemini clients (one for each API key)
+client_stt = genai.Client(api_key=GEMINI_STT_KEY) if GEMINI_STT_KEY else None
+client_conversation = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
 # Initialize database
 def init_db():
@@ -67,14 +74,14 @@ def preprocess_audio(audio_bytes):
         print(f"❌ Audio processing error: {e}")
         return audio_bytes, "audio/webm"
 
-# ========== GEMINI SPEECH-TO-TEXT ==========
+# ========== GEMINI SPEECH-TO-TEXT (Uses GEMINI_STT) ==========
 def transcribe_with_gemini(audio_bytes, mime_type="audio/webm"):
-    """Transcribe speech to text using Gemini 2.5 Flash"""
-    if not GEMINI_API_KEY:
-        return "AI service is not configured.", "en"
+    """Transcribe speech to text using Gemini 2.5 Flash (STT key)"""
+    if not GEMINI_STT_KEY or not client_stt:
+        return "Speech-to-text service is not configured.", "en"
     
     try:
-        print(f"🎤 Transcribing with Gemini ({len(audio_bytes)} bytes, {mime_type})...")
+        print(f"🎤 Transcribing with Gemini STT ({len(audio_bytes)} bytes, {mime_type})...")
         
         prompt = """Listen to this audio and transcribe the speech to text.
 Detect the language and return ONLY a valid JSON response:
@@ -83,7 +90,7 @@ Detect the language and return ONLY a valid JSON response:
 Language codes: en, es, fr, ar, zh, ja, ko, ru, de, it, pt, hi
 If you cannot understand, return: {"text": "", "language": "unknown", "confidence": 0.0}"""
         
-        response = client.models.generate_content(
+        response = client_stt.models.generate_content(
             model="gemini-2.5-flash",
             contents=[
                 prompt,
@@ -118,7 +125,7 @@ If you cannot understand, return: {"text": "", "language": "unknown", "confidenc
         
         # Check if response is empty
         if not response or not hasattr(response, 'candidates') or not response.candidates:
-            print(f"⚠️ Empty response from Gemini transcription")
+            print(f"⚠️ Empty response from Gemini STT")
             return "Could not transcribe audio. Please try again.", "en"
         
         # Try to get text from response
@@ -135,7 +142,7 @@ If you cannot understand, return: {"text": "", "language": "unknown", "confidenc
             print(f"⚠️ No text in transcription response")
             return "Could not transcribe audio. Please try again.", "en"
         
-        print(f"📝 Gemini raw response: {result_text}")
+        print(f"📝 Gemini STT response: {result_text}")
         
         # Clean markdown code blocks
         if "json" in result_text.lower() and '`' in result_text:
@@ -175,7 +182,7 @@ If you cannot understand, return: {"text": "", "language": "unknown", "confidenc
             return "Could not understand the audio. Please try again.", "en"
             
     except Exception as e:
-        print(f"❌ Gemini transcription error: {e}")
+        print(f"❌ Gemini STT error: {e}")
         import traceback
         traceback.print_exc()
         return "Error processing audio. Please try again.", "en"
@@ -254,10 +261,10 @@ def get_conversation_history(session_id, limit=5):
         print(f"Database error: {e}")
         return []
 
-# ========== AI RESPONSE ==========
+# ========== AI RESPONSE (Uses GEMINI_API_KEY) ==========
 def get_ai_response(text, session_id="default", language='en'):
-    """Get response from Gemini 2.5 Flash"""
-    if not GEMINI_API_KEY:
+    """Get response from Gemini 2.5 Flash (Conversation key)"""
+    if not GEMINI_API_KEY or not client_conversation:
         return "AI service is not configured.", language
     
     history = get_conversation_history(session_id)
@@ -287,9 +294,9 @@ def get_ai_response(text, session_id="default", language='en'):
     full_prompt = f"{context}User: {text}\n{instruction}"
     
     try:
-        print(f"📤 Sending to Gemini: {full_prompt[:150]}...")
+        print(f"📤 Sending to Gemini API: {full_prompt[:150]}...")
         
-        response = client.models.generate_content(
+        response = client_conversation.models.generate_content(
             model="gemini-2.5-flash",
             contents=full_prompt,
             config=types.GenerateContentConfig(
@@ -317,9 +324,9 @@ def get_ai_response(text, session_id="default", language='en'):
                         ai_text = candidate.content.parts[0].text.strip()
         
         if ai_text:
-            print(f"✅ Gemini response ({language}): {ai_text[:100]}...")
+            print(f"✅ Gemini API response ({language}): {ai_text[:100]}...")
         else:
-            print(f"⚠️ Empty response from Gemini")
+            print(f"⚠️ Empty response from Gemini API")
             print(f"Response: {response}")
             if hasattr(response, 'candidates'):
                 print(f"Candidates: {response.candidates}")
@@ -367,13 +374,14 @@ def health():
     """Health check endpoint"""
     return jsonify({
         "status": "active",
-        "free": True,
+        "stt_configured": bool(GEMINI_STT_KEY),
+        "api_configured": bool(GEMINI_API_KEY),
         "gemini_api": "gemini-2.5-flash",
-        "gemini_configured": bool(GEMINI_API_KEY),
         "multilingual": True,
         "supported_languages": list(LANGUAGE_MAPPING.keys()),
         "audio_support": True,
-        "speech_recognition": "Gemini-native",
+        "speech_recognition": "Gemini-native (STT)",
+        "conversation_engine": "Gemini-native (API)",
         "python_version": f"{os.sys.version_info.major}.{os.sys.version_info.minor}.{os.sys.version_info.micro}",
         "timestamp": datetime.now().isoformat()
     })
@@ -404,7 +412,7 @@ def voice_chat():
         print("🎵 Preprocessing audio...")
         processed_audio, mime_type = preprocess_audio(audio_bytes)
         
-        print("🎤 Step 1: Transcribing with Gemini...")
+        print("🎤 Step 1: Transcribing with Gemini STT...")
         user_text, detected_language = transcribe_with_gemini(processed_audio, mime_type)
         
         if not user_text or len(user_text.strip()) < 2:
@@ -525,7 +533,8 @@ def clear_history():
 @app.route('/')
 def index():
     """Homepage"""
-    gemini_status = "✅ Configured" if GEMINI_API_KEY else "❌ Not Configured"
+    stt_status = "✅ Configured" if GEMINI_STT_KEY else "❌ Not Configured"
+    api_status = "✅ Configured" if GEMINI_API_KEY else "❌ Not Configured"
     return f"""
 <!DOCTYPE html>
 <html>
@@ -621,13 +630,14 @@ def index():
         
         <div class="status">
             <p><strong>Status:</strong> ✅ Active</p>
-            <p><strong>Speech Recognition:</strong> ✅ Gemini-native</p>
+            <p><strong>Dual API Keys:</strong> ✅ Separate quotas for STT & API</p>
             <p><strong>Multilingual:</strong> ✅ Auto-detection</p>
-            <p><strong>Fix:</strong> ✅ Max tokens increased to 2048</p>
+            <p><strong>Architecture:</strong> ✅ Optimized for scalability</p>
         </div>
         
-        <div class="status {'warning' if not GEMINI_API_KEY else ''}">
-            <p><strong>Gemini 2.5 Flash:</strong> {gemini_status}</p>
+        <div class="status {'warning' if not GEMINI_STT_KEY or not GEMINI_API_KEY else ''}">
+            <p><strong>Speech-to-Text (GEMINI_STT):</strong> {stt_status}</p>
+            <p><strong>Conversation (GEMINI_API_KEY):</strong> {api_status}</p>
         </div>
         
         <h3>✨ Supported Languages (Auto-detected)</h3>
@@ -648,19 +658,27 @@ def index():
         
         <h2>API Endpoints</h2>
         <div class="endpoint"><strong>POST</strong> /api/voice-chat - Voice chat with auto language detection</div>
-        <div class="endpoint"><strong>POST</strong> /api/text-chat - Text chat</div>
+        <div class="endpoint"><strong>POST</strong> /api/text-chat - Text chat (uses conversation API only)</div>
         <div class="endpoint"><strong>POST</strong> /api/clear-history - Clear history</div>
         <div class="endpoint"><strong>GET</strong> /health - Health check</div>
         
+        <h3>Dual API Key Architecture</h3>
+        <ul>
+            <li>🎤 <strong>GEMINI_STT:</strong> Speech-to-text transcription (20 req/day free tier)</li>
+            <li>💬 <strong>GEMINI_API_KEY:</strong> Conversation responses (20 req/day free tier)</li>
+            <li>✅ Separate quota management for each service</li>
+            <li>✅ Scale each service independently</li>
+        </ul>
+        
         <h3>Features</h3>
         <ul>
-            <li>✅ Speech-to-text using Gemini 2.5 Flash</li>
+            <li>✅ Speech-to-text using Gemini 2.5 Flash (STT key)</li>
             <li>✅ Automatic language detection from audio</li>
-            <li>✅ Improved Arabic support with better transcription</li>
-            <li>✅ Multilingual responses in same language</li>
+            <li>✅ Improved multilingual support</li>
+            <li>✅ AI responses using dedicated API key</li>
             <li>✅ Text-to-speech with gTTS</li>
             <li>✅ Conversation memory</li>
-            <li>✅ Free to use (Render + Gemini free tier)</li>
+            <li>✅ Independent quota scaling</li>
         </ul>
         
         <button onclick="testHealth()">Test Health</button>
@@ -677,10 +695,10 @@ def index():
                 const data = await response.json();
                 result.innerHTML = `<div class="success">
                     <strong>✅ Healthy!</strong><br>
-                    Gemini: ${{data.gemini_configured ? '✅' : '❌'}}<br>
-                    Audio Support: ${{data.audio_support ? '✅' : '❌'}}<br>
-                    Multilingual: ${{data.multilingual ? '✅' : '❌'}}<br>
-                    Languages: ${{data.supported_languages.length}}
+                    STT (GEMINI_STT): ${{data.stt_configured ? '✅' : '❌'}}<br>
+                    API (GEMINI_API_KEY): ${{data.api_configured ? '✅' : '❌'}}<br>
+                    Languages: ${{data.supported_languages.length}}<br>
+                    Speech Recognition: Gemini-native
                 </div>`;
             }} catch (error) {{
                 result.innerHTML = `<div class="error"><strong>❌ Failed:</strong> ${{error.message}}</div>`;
@@ -696,8 +714,8 @@ def index():
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     print(f"🚀 Starting Gemini Voice Chatbot on port {port}")
-    print(f"🤖 Using Gemini 2.5 Flash for speech recognition")
+    print(f"🎤 Using GEMINI_STT key for speech-to-text transcription")
+    print(f"💬 Using GEMINI_API_KEY for conversation responses")
     print(f"🌍 Supports {len(LANGUAGE_MAPPING)} languages with auto-detection")
-    print(f"🎤 Speech-to-text: Gemini-native")
-    print(f"⚠️ Fix applied: max_output_tokens increased to 2048")
+    print(f"⚠️ Dual API keys for independent quota management")
     app.run(host='0.0.0.0', port=port, debug=False)
