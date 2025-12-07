@@ -83,7 +83,7 @@ Language codes: en, es, fr, ar, zh, ja, ko, ru, de, it, pt, hi
 If you cannot understand, return: {"text": "", "language": "unknown", "confidence": 0.0}"""
         
         response = client.models.generate_content(
-            model="gemini-2.5-flash-live",
+            model="gemini-2.5-flash-native-audio-dialog",
             contents=[
                 prompt,
                 types.Part.from_bytes(
@@ -289,7 +289,7 @@ def get_ai_response(text, session_id="default", language='en'):
         print(f"📤 Sending to Gemini: {full_prompt[:150]}...")
         
         response = client.models.generate_content(
-            model="gemini-2.5-flash-live",
+            model="gemini-2.5-flash-native-audio-dialog",
             contents=full_prompt,
             config=types.GenerateContentConfig(
                 temperature=0.7,
@@ -367,7 +367,7 @@ def health():
     return jsonify({
         "status": "active",
         "free": True,
-        "gemini_api": "gemini-2.5-flash-live",
+        "gemini_api": "gemini-2.5-flash-native-audio-dialog",
         "gemini_configured": bool(GEMINI_API_KEY),
         "multilingual": True,
         "supported_languages": list(LANGUAGE_MAPPING.keys()),
