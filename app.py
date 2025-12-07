@@ -930,17 +930,34 @@ HTML_TEMPLATE = """
         }
 
         function sendVoiceMessage() {
-            if (!audioChunks.length) return;
+            if (!audioChunks.length) {
+                updateStatus('❌ No audio recorded. Try again.', 'error');
+                return;
+            }
 
             const blob = new Blob(audioChunks, { type: 'audio/webm' });
+            console.log(`🎤 Blob size: ${blob.size} bytes`);
+            
+            if (blob.size < 500) {
+                updateStatus('❌ Recording too short (need at least 1 second)', 'error');
+                addMessage('Recording too short. Please try again for at least 1-2 seconds.', false);
+                return;
+            }
+
             const formData = new FormData();
-            formData.append('audio', blob);
+            formData.append('audio', blob, 'audio.webm');
             formData.append('session_id', sessionId);
             formData.append('mode', currentMode);
 
             const data = getUserData();
             formData.append('user_details', JSON.stringify(data.user_details));
             formData.append('offer_details', JSON.stringify(data.offer_details));
+
+            console.log('📤 Sending voice data...', {
+                blobSize: blob.size,
+                sessionId: sessionId,
+                mode: currentMode
+            });
 
             updateStatus('Processing voice...');
             showTyping();
@@ -949,14 +966,23 @@ HTML_TEMPLATE = """
                 method: 'POST',
                 body: formData
             })
-            .then(r => r.json())
+            .then(r => {
+                console.log('📥 Response status:', r.status);
+                return r.json();
+            })
             .then(d => {
                 removeTyping();
+                console.log('✅ Response:', d);
+                
                 if (d.success) {
                     addMessage(`🎤 You: ${d.transcribed_text}`, true);
                     addMessage(d.ai_response, false);
                     if (d.audio_response) {
-                        new Audio(`data:audio/webm;base64,${d.audio_response}`).play();
+                        try {
+                            new Audio(`data:audio/webm;base64,${d.audio_response}`).play();
+                        } catch (e) {
+                            console.warn('Audio playback failed:', e);
+                        }
                     }
                     updateStatus('Ready to chat', 'success');
                 } else {
@@ -966,8 +992,9 @@ HTML_TEMPLATE = """
             })
             .catch(e => {
                 removeTyping();
-                addMessage(`❌ ${e.message}`, false);
-                updateStatus(e.message, 'error');
+                console.error('❌ Fetch error:', e);
+                addMessage(`❌ Network error: ${e.message}`, false);
+                updateStatus(`Network error: ${e.message}`, 'error');
             });
         }
 
@@ -1029,43 +1056,92 @@ def text_chat():
 @app.route('/api/voice-chat', methods=['POST'])
 def voice_chat():
     try:
+        # DEBUG: Log all request data
+        print(f"📨 Voice Chat Request:")
+        print(f"  Files: {list(request.files.keys())}")
+        print(f"  Form data: {list(request.form.keys())}")
+        
+        # Check if audio file exists
         if 'audio' not in request.files:
-            return jsonify({"success": False, "error": "No audio file"}), 400
+            print(f"❌ No audio file in request")
+            return jsonify({
+                "success": False,
+                "error": "No audio file. Make sure microphone permission is granted."
+            }), 400
         
         audio_file = request.files['audio']
+        
+        # Check if file has data
+        if not audio_file or audio_file.filename == '':
+            print(f"❌ Audio file is empty")
+            return jsonify({
+                "success": False,
+                "error": "Audio file is empty. Try recording again."
+            }), 400
+        
+        audio_bytes = audio_file.read()
+        print(f"📦 Audio size: {len(audio_bytes)} bytes")
+        
+        # Check minimum audio size (at least 500 bytes for valid audio)
+        if len(audio_bytes) < 500:
+            print(f"❌ Audio too short ({len(audio_bytes)} bytes)")
+            return jsonify({
+                "success": False,
+                "error": f"Audio too short. Please record for at least 1 second. (Received: {len(audio_bytes)} bytes)"
+            }), 400
+        
         session_id = request.form.get('session_id', 'default')
         mode = request.form.get('mode', 'coaching')
         
+        print(f"🎙️ Session: {session_id}, Mode: {mode}")
+        
+        # Parse user and offer details with better error handling
         try:
-            user_details = json.loads(request.form.get('user_details', '{}'))
-            offer_details = json.loads(request.form.get('offer_details', '{}'))
-        except:
-            user_details, offer_details = {}, {}
+            user_details_str = request.form.get('user_details', '{}')
+            offer_details_str = request.form.get('offer_details', '{}')
+            print(f"  User details: {user_details_str[:50]}...")
+            print(f"  Offer details: {offer_details_str[:50]}...")
+            user_details = json.loads(user_details_str)
+            offer_details = json.loads(offer_details_str)
+        except json.JSONDecodeError as je:
+            print(f"❌ Invalid JSON in form data: {je}")
+            return jsonify({
+                "success": False,
+                "error": f"Invalid user/offer details format: {str(je)}"
+            }), 400
         
-        audio_bytes = audio_file.read()
+        print(f"✅ Request validated successfully")
         
-        print(f"🎤 Voice received ({len(audio_bytes)} bytes)")
-        
-        # Step 1: Transcribe
+        # Step 1: Transcribe audio
+        print(f"🎤 Starting transcription...")
         transcribed_text, detected_language = transcribe_with_gemini(audio_bytes, "audio/webm")
-        print(f"✅ Transcribed: {transcribed_text}")
+        print(f"📝 Result: {transcribed_text}")
         
+        # Check for transcription errors
         if "error" in transcribed_text.lower() or "could" in transcribed_text.lower() or "quota" in transcribed_text.lower():
+            print(f"⚠️ Transcription failed: {transcribed_text}")
             return jsonify({
                 "success": False,
                 "error": transcribed_text
             }), 400
         
         # Step 2: Get chat history
+        print(f"📖 Fetching conversation history...")
         chat_history = get_conversation_history(session_id)
+        print(f"  Retrieved {len(chat_history)} previous messages")
         
         # Step 3: Get AI response
+        print(f"🤖 Generating AI response...")
         ai_response = get_ai_response(transcribed_text, user_details, offer_details, chat_history, mode, detected_language)
+        print(f"💬 AI: {ai_response[:80]}...")
         
+        # Step 4: Save conversation
         save_conversation(session_id, transcribed_text, ai_response, detected_language)
         
-        # Step 4: TTS
+        # Step 5: TTS (Text to Speech)
+        print(f"🔊 Generating audio response...")
         audio_response = text_to_speech(ai_response, detected_language)
+        print(f"✅ TTS generated: {len(audio_response) if audio_response else 0} chars")
         
         return jsonify({
             "success": True,
@@ -1077,10 +1153,14 @@ def voice_chat():
         })
         
     except Exception as e:
-        print(f"❌ Voice error: {e}")
+        print(f"❌ Voice Chat Error: {e}")
         import traceback
-        traceback.print_exc()
-        return jsonify({"success": False, "error": str(e)}), 500
+        error_trace = traceback.format_exc()
+        print(error_trace)
+        return jsonify({
+            "success": False,
+            "error": f"Server error: {str(e)}"
+        }), 500
 
 @app.route('/api/quota-status', methods=['GET'])
 def quota_status():
