@@ -62,14 +62,12 @@ def preprocess_audio(audio_bytes):
     """Simple audio preprocessing without pydub"""
     try:
         print(f"🎵 Processing audio: {len(audio_bytes)} bytes")
-        # Just return the audio as-is - Gemini can handle WebM
-        # If you really need MP3, you can use an online service or different library
         return audio_bytes, "audio/webm"
     except Exception as e:
         print(f"❌ Audio processing error: {e}")
         return audio_bytes, "audio/webm"
 
-# ========== GEMINI SPEECH-TO-TEXT (UPDATED FOR ARABIC) ==========
+# ========== GEMINI SPEECH-TO-TEXT ==========
 def transcribe_with_gemini(audio_bytes, mime_type="audio/webm"):
     """Transcribe speech to text using Gemini 2.5 Flash"""
     if not GEMINI_API_KEY:
@@ -78,7 +76,6 @@ def transcribe_with_gemini(audio_bytes, mime_type="audio/webm"):
     try:
         print(f"🎤 Transcribing with Gemini ({len(audio_bytes)} bytes, {mime_type})...")
         
-        # Improved prompt for better Arabic and multilingual support
         prompt = """Transcribe this speech to text. IMPORTANT INSTRUCTIONS:
 1. Detect the language accurately (especially for Arabic, Chinese, Japanese, Korean)
 2. If the speech is in Arabic, transcribe it carefully with proper Arabic script
@@ -97,7 +94,6 @@ If you cannot understand anything, return:
     "confidence": 0.0
 }"""
         
-        # Send to Gemini
         response = client.models.generate_content(
             model="gemini-2.5-flash",
             contents=[
@@ -113,28 +109,26 @@ If you cannot understand anything, return:
             )
         )
         
-        # Parse the response
         result_text = response.text.strip()
         print(f"📝 Gemini raw response: {result_text}")
         
-        # Try to parse as JSON
+        # Clean markdown code blocks
+        if "json" in result_text and result_text.count('`') >= 6:
+            # Remove `````` markers
+            result_text = result_text.replace('``````', '').strip()
+        elif result_text.count('`') >= 6:
+            # Remove ```
+            result_text = result_text.replace('```', '').strip()
+        
         try:
-            # Clean the response
-            if "```
-                result_text = result_text.split("```json").split("```
-            elif "```" in result_text:
-                result_text = result_text.split("```
-            
             result = json.loads(result_text)
             text = result.get("text", "").strip()
             language = result.get("language", "unknown")
             confidence = result.get("confidence", 0)
             
-            # Lower confidence threshold for better language support
-            if confidence > 0.1 or text:  # Lower threshold
+            if confidence > 0.1 or text:
                 print(f"✅ Transcribed ({language}, confidence: {confidence}): {text}")
                 
-                # If language is unknown but we have text, try to detect
                 if language == "unknown" and text:
                     language = detect_language_from_text(text)
                 
@@ -144,12 +138,9 @@ If you cannot understand anything, return:
                 return "Could you please repeat that more clearly?", "en"
                 
         except json.JSONDecodeError:
-            # If not JSON, try to extract text
             print(f"⚠️ Could not parse JSON, extracting text from: {result_text}")
             
-            # Try to find text in the response
             if "text" in result_text.lower():
-                # Try to extract manually
                 import re
                 text_match = re.search(r'"text"\s*:\s*"([^"]+)"', result_text)
                 lang_match = re.search(r'"language"\s*:\s*"([^"]+)"', result_text)
@@ -159,9 +150,8 @@ If you cannot understand anything, return:
                     language = lang_match.group(1) if lang_match else detect_language_from_text(text)
                     return text, language
             
-            # Last resort: use raw text
             language = detect_language_from_text(result_text)
-            return result_text[:200], language  # Limit length
+            return result_text[:200], language
             
     except Exception as e:
         print(f"❌ Gemini transcription error: {e}")
@@ -169,7 +159,7 @@ If you cannot understand anything, return:
         traceback.print_exc()
         return "Error processing audio. Please try again.", "en"
 
-# ========== IMPROVED LANGUAGE DETECTION ==========
+# ========== LANGUAGE DETECTION ==========
 def detect_language_from_text(text):
     """Improved language detection from text"""
     if not text or not text.strip():
@@ -187,16 +177,15 @@ def detect_language_from_text(text):
         return 'zh'
     
     # Check for Japanese
-    if any('\u3040' <= c <= '\u309f' for c in text):  # Hiragana
+    if any('\u3040' <= c <= '\u309f' for c in text):
         return 'ja'
-    if any('\u30a0' <= c <= '\u30ff' for c in text):  # Katakana
+    if any('\u30a0' <= c <= '\u30ff' for c in text):
         return 'ja'
     
     # Check for Korean
     if any('\uac00' <= c <= '\ud7a3' for c in text):
         return 'ko'
     
-    # Check for common phrases
     language_keywords = {
         'en': ['hello', 'hi', 'thank you', 'please', 'how are', 'what is'],
         'es': ['hola', 'gracias', 'por favor', 'cómo', 'qué'],
@@ -244,23 +233,20 @@ def get_conversation_history(session_id, limit=5):
         print(f"Database error: {e}")
         return []
 
-# ========== AI RESPONSE (UPDATED WITH BETTER ERROR LOGGING) ==========
+# ========== AI RESPONSE ==========
 def get_ai_response(text, session_id="default", language='en'):
     """Get response from Gemini 2.5 Flash"""
     if not GEMINI_API_KEY:
         return "AI service is not configured. Please set GEMINI_API_KEY environment variable.", language
     
-    # Get conversation history
     history = get_conversation_history(session_id)
     
-    # Build context from history
     context = ""
     if history:
         for user_msg, ai_msg, hist_lang in reversed(history):
             context += f"User: {user_msg}\nAssistant: {ai_msg}\n"
         context += "\n"
     
-    # Language-specific instructions with better Arabic support
     language_prompts = {
         'en': "Respond conversationally in 1-3 sentences as a helpful voice assistant.",
         'es': "Responde de manera conversacional en 1-3 frases como un asistente de voz útil.",
@@ -278,7 +264,6 @@ def get_ai_response(text, session_id="default", language='en'):
     
     instruction = language_prompts.get(language, language_prompts['en'])
     
-    # Combine with current input
     full_prompt = f"""{context}User: {text}
 
 {instruction}
@@ -287,14 +272,12 @@ IMPORTANT: Respond ONLY in {language} language. Keep it natural and conversation
     try:
         print(f"📤 Sending to Gemini: {full_prompt[:200]}...")
         
-        # Generate content with Gemini
         response = client.models.generate_content(
             model="gemini-2.5-flash",
             contents=full_prompt,
             config=types.GenerateContentConfig(
                 temperature=0.7,
                 max_output_tokens=150,
-                # Add safety settings to be less restrictive
                 safety_settings=[
                     types.SafetySetting(
                         category="HARM_CATEGORY_HARASSMENT",
@@ -316,27 +299,23 @@ IMPORTANT: Respond ONLY in {language} language. Keep it natural and conversation
             )
         )
         
-        # DEBUG: Log full response object
         print(f"📦 Response object: {response}")
         print(f"📦 Response candidates: {response.candidates if hasattr(response, 'candidates') else 'N/A'}")
         
-        # Check if response was blocked
         if hasattr(response, 'prompt_feedback'):
             print(f"⚠️ Prompt feedback: {response.prompt_feedback}")
             if hasattr(response.prompt_feedback, 'block_reason'):
                 print(f"🚫 Blocked reason: {response.prompt_feedback.block_reason}")
         
-        # Extract text from response
         if response and hasattr(response, 'text') and response.text:
             ai_text = response.text.strip()
             print(f"✅ Gemini response ({language}): {ai_text[:100]}...")
         elif response and hasattr(response, 'candidates') and response.candidates:
-            # Try to get text from first candidate
-            candidate = response.candidates
+            candidate = response.candidates[0]
             print(f"📋 Candidate: {candidate}")
             if hasattr(candidate, 'content') and candidate.content:
                 if hasattr(candidate.content, 'parts') and candidate.content.parts:
-                    ai_text = candidate.content.parts.text.strip()
+                    ai_text = candidate.content.parts[0].text.strip()
                     print(f"✅ Extracted from candidate ({language}): {ai_text[:100]}...")
                 else:
                     print(f"⚠️ No parts in candidate content")
@@ -354,7 +333,6 @@ IMPORTANT: Respond ONLY in {language} language. Keep it natural and conversation
         import traceback
         traceback.print_exc()
         
-        # Fallback responses
         fallback_responses = {
             'en': "I'm having trouble connecting to my AI service right now. Please try again in a moment.",
             'es': "Estoy teniendo problemas para conectarme a mi servicio de IA en este momento. Por favor, inténtalo de nuevo en un momento.",
@@ -371,7 +349,6 @@ IMPORTANT: Respond ONLY in {language} language. Keep it natural and conversation
         }
         ai_text = fallback_responses.get(language, fallback_responses['en'])
     
-    # Save to memory
     save_conversation(session_id, text, ai_text, language)
     
     return ai_text, language
@@ -380,7 +357,6 @@ IMPORTANT: Respond ONLY in {language} language. Keep it natural and conversation
 def text_to_speech(text, language='en'):
     """Convert text to speech using gTTS"""
     try:
-        # Map language code
         tts_lang = LANGUAGE_MAPPING.get(language, 'en')
         tts = gTTS(text=text, lang=tts_lang, slow=False)
         
@@ -393,7 +369,6 @@ def text_to_speech(text, language='en'):
         return audio_bytes
     except Exception as e:
         print(f"❌ TTS error: {e}")
-        # Fallback to English
         if language != 'en':
             try:
                 tts = gTTS(text=text, lang='en', slow=False)
@@ -439,22 +414,18 @@ def voice_chat():
         
         print(f"📥 Received audio: {len(audio_base64)} chars base64")
         
-        # Convert base64 to bytes
         try:
             audio_bytes = base64.b64decode(audio_base64)
             print(f"✅ Decoded audio: {len(audio_bytes)} bytes")
         except Exception as e:
             return jsonify({"success": False, "error": f"Invalid base64 audio: {str(e)}"}), 400
         
-        # Preprocess audio (simplified without pydub)
         print("🎵 Preprocessing audio...")
         processed_audio, mime_type = preprocess_audio(audio_bytes)
         
-        # Step 1: Transcribe with Gemini (includes language detection)
         print("🎤 Step 1: Transcribing with Gemini...")
         user_text, detected_language = transcribe_with_gemini(processed_audio, mime_type)
         
-        # Check if transcription failed
         if not user_text or len(user_text.strip()) < 2:
             return jsonify({
                 "success": False,
@@ -463,17 +434,14 @@ def voice_chat():
                 "detected_language": detected_language
             }), 400
         
-        # Override with language hint if provided
         if language_hint != 'auto' and language_hint in LANGUAGE_MAPPING:
             detected_language = language_hint
         
         print(f"🌐 Detected language: {detected_language}")
         
-        # Step 2: Get AI Response
         print(f"🤖 Step 2: Getting AI response in {detected_language}...")
         ai_response, response_language = get_ai_response(user_text, session_id, detected_language)
         
-        # Step 3: Text to Speech
         print(f"🔊 Step 3: Generating speech in {response_language}...")
         audio_response = text_to_speech(ai_response, response_language)
         
@@ -522,16 +490,13 @@ def text_chat():
         
         print(f"💬 Text chat: {text}")
         
-        # Detect language
         detected_language = detect_language_from_text(text)
         
-        # Use hint if provided
         if language_hint != 'auto' and language_hint in LANGUAGE_MAPPING:
             detected_language = language_hint
         
         print(f"🌐 Language: {detected_language}")
         
-        # Get AI response
         ai_response, response_language = get_ai_response(text, session_id, detected_language)
         
         print(f"✅ AI response ({response_language}): {ai_response[:100]}...")
