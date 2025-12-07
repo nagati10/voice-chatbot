@@ -1,24 +1,33 @@
-# Remove pydub import and replace with alternative approach
+# Multi-Key Load Balancing for Gemini API
 import io
 import os
-import wave
 import base64
 from datetime import datetime
 import sqlite3
-import tempfile
 import json
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from google import genai
 from google.genai import types
 from gtts import gTTS
+import random
 
 app = Flask(__name__)
 CORS(app)
 
-# ========== CONFIG - DUAL API KEYS ==========
-GEMINI_STT_KEY = os.getenv("GEMINI_STT")  # For Speech-to-Text (transcription)
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")  # For conversation/AI responses
+# ========== CONFIG - MULTI-KEY LOAD BALANCING ==========
+# Define all your Gemini API keys
+GEMINI_KEYS = {
+    'key1': os.getenv("GEMINI_KEY1"),
+    'key2': os.getenv("GEMINI_KEY2"),
+    'key3': os.getenv("GEMINI_KEY3"),
+    'key4': os.getenv("GEMINI_KEY4"),
+    'key5': os.getenv("GEMINI_KEY5"),
+}
+
+# Filter out None values (only configured keys)
+ACTIVE_KEYS = {k: v for k, v in GEMINI_KEYS.items() if v}
+
 DATABASE_FILE = "conversations.db"
 
 # Language code mapping for gTTS
@@ -39,19 +48,17 @@ LANGUAGE_MAPPING = {
     'hi': 'hi',    # Hindi
 }
 
-if not GEMINI_STT_KEY:
-    print("⚠️ WARNING: GEMINI_STT not set!")
-else:
-    print("✅ GEMINI_STT is configured")
+# Initialize Gemini clients for each key
+gemini_clients = {}
+for key_name, api_key in ACTIVE_KEYS.items():
+    gemini_clients[key_name] = genai.Client(api_key=api_key)
+    print(f"✅ {key_name.upper()} configured - Ready for load balancing")
 
-if not GEMINI_API_KEY:
-    print("⚠️ WARNING: GEMINI_API_KEY not set!")
+if not gemini_clients:
+    print("⚠️ WARNING: No Gemini API keys configured!")
 else:
-    print("✅ GEMINI_API_KEY is configured")
-
-# Initialize Gemini clients (one for each API key)
-client_stt = genai.Client(api_key=GEMINI_STT_KEY) if GEMINI_STT_KEY else None
-client_conversation = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+    print(f"🎯 Total active keys: {len(gemini_clients)}")
+    print(f"📊 Total RPD capacity: {len(gemini_clients) * 20} requests/day")
 
 # Initialize database
 def init_db():
@@ -59,10 +66,39 @@ def init_db():
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS conversations
                  (session_id TEXT, timestamp DATETIME, user_input TEXT, ai_response TEXT, language TEXT)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS key_usage
+                 (key_name TEXT, timestamp DATETIME, endpoint TEXT, status TEXT)''')
     conn.commit()
     conn.close()
 
 init_db()
+
+# ========== KEY ROTATION & LOAD BALANCING ==========
+def get_random_key():
+    """Get a random active key for load balancing"""
+    if not gemini_clients:
+        return None
+    return random.choice(list(gemini_clients.keys()))
+
+def get_round_robin_key():
+    """Alternative: Round-robin key selection (for balanced distribution)"""
+    if not gemini_clients:
+        return None
+    # Simple round-robin using session or random
+    keys = list(gemini_clients.keys())
+    return keys[hash(datetime.now().timestamp()) % len(keys)]
+
+def log_key_usage(key_name, endpoint, status="success"):
+    """Log which key was used for monitoring"""
+    try:
+        conn = sqlite3.connect(DATABASE_FILE)
+        c = conn.cursor()
+        c.execute("INSERT INTO key_usage VALUES (?, ?, ?, ?)",
+                  (key_name, datetime.now(), endpoint, status))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"Database error logging key usage: {e}")
 
 # ========== SIMPLE AUDIO PREPROCESSING ==========
 def preprocess_audio(audio_bytes):
@@ -74,14 +110,18 @@ def preprocess_audio(audio_bytes):
         print(f"❌ Audio processing error: {e}")
         return audio_bytes, "audio/webm"
 
-# ========== GEMINI SPEECH-TO-TEXT (Uses GEMINI_STT) ==========
+# ========== GEMINI SPEECH-TO-TEXT (Load Balanced) ==========
 def transcribe_with_gemini(audio_bytes, mime_type="audio/webm"):
-    """Transcribe speech to text using Gemini 2.5 Flash (STT key)"""
-    if not GEMINI_STT_KEY or not client_stt:
+    """Transcribe speech to text using Gemini 2.5 Flash (Load Balanced)"""
+    if not gemini_clients:
         return "Speech-to-text service is not configured.", "en"
     
+    # Select a key using load balancing
+    key_name = get_random_key()
+    client = gemini_clients[key_name]
+    
     try:
-        print(f"🎤 Transcribing with Gemini STT ({len(audio_bytes)} bytes, {mime_type})...")
+        print(f"🎤 Transcribing with Gemini STT using {key_name.upper()} ({len(audio_bytes)} bytes)...")
         
         prompt = """Listen to this audio and transcribe the speech to text.
 Detect the language and return ONLY a valid JSON response:
@@ -90,7 +130,7 @@ Detect the language and return ONLY a valid JSON response:
 Language codes: en, es, fr, ar, zh, ja, ko, ru, de, it, pt, hi
 If you cannot understand, return: {"text": "", "language": "unknown", "confidence": 0.0}"""
         
-        response = client_stt.models.generate_content(
+        response = client.models.generate_content(
             model="gemini-2.5-flash",
             contents=[
                 prompt,
@@ -122,6 +162,8 @@ If you cannot understand, return: {"text": "", "language": "unknown", "confidenc
                 ]
             )
         )
+        
+        log_key_usage(key_name, "/api/voice-chat", "success")
         
         # Check if response is empty
         if not response or not hasattr(response, 'candidates') or not response.candidates:
@@ -165,7 +207,6 @@ If you cannot understand, return: {"text": "", "language": "unknown", "confidenc
                 
         except json.JSONDecodeError as e:
             print(f"⚠️ JSON parsing failed: {e}")
-            print(f"⚠️ Result text: {result_text}")
             
             # Try regex extraction
             import re
@@ -178,11 +219,11 @@ If you cannot understand, return: {"text": "", "language": "unknown", "confidenc
                 print(f"✅ Extracted via regex: {text} ({language})")
                 return text, language
             
-            # Last resort
             return "Could not understand the audio. Please try again.", "en"
             
     except Exception as e:
-        print(f"❌ Gemini STT error: {e}")
+        print(f"❌ Gemini STT error on {key_name}: {e}")
+        log_key_usage(key_name, "/api/voice-chat", "error")
         import traceback
         traceback.print_exc()
         return "Error processing audio. Please try again.", "en"
@@ -261,11 +302,15 @@ def get_conversation_history(session_id, limit=5):
         print(f"Database error: {e}")
         return []
 
-# ========== AI RESPONSE (Uses GEMINI_API_KEY) ==========
+# ========== AI RESPONSE (Load Balanced) ==========
 def get_ai_response(text, session_id="default", language='en'):
-    """Get response from Gemini 2.5 Flash (Conversation key)"""
-    if not GEMINI_API_KEY or not client_conversation:
+    """Get response from Gemini 2.5 Flash (Load Balanced)"""
+    if not gemini_clients:
         return "AI service is not configured.", language
+    
+    # Select a key using load balancing
+    key_name = get_random_key()
+    client = gemini_clients[key_name]
     
     history = get_conversation_history(session_id)
     
@@ -294,9 +339,9 @@ def get_ai_response(text, session_id="default", language='en'):
     full_prompt = f"{context}User: {text}\n{instruction}"
     
     try:
-        print(f"📤 Sending to Gemini API: {full_prompt[:150]}...")
+        print(f"📤 Sending to Gemini API using {key_name.upper()}: {full_prompt[:150]}...")
         
-        response = client_conversation.models.generate_content(
+        response = client.models.generate_content(
             model="gemini-2.5-flash",
             contents=full_prompt,
             config=types.GenerateContentConfig(
@@ -310,6 +355,8 @@ def get_ai_response(text, session_id="default", language='en'):
                 ]
             )
         )
+        
+        log_key_usage(key_name, "/api/text-chat", "success")
         
         # Extract text with multiple fallbacks
         ai_text = None
@@ -326,14 +373,12 @@ def get_ai_response(text, session_id="default", language='en'):
         if ai_text:
             print(f"✅ Gemini API response ({language}): {ai_text[:100]}...")
         else:
-            print(f"⚠️ Empty response from Gemini API")
-            print(f"Response: {response}")
-            if hasattr(response, 'candidates'):
-                print(f"Candidates: {response.candidates}")
+            print(f"⚠️ Empty response from Gemini API on {key_name}")
             ai_text = "Sorry, I couldn't generate a response. Please try again."
             
     except Exception as e:
-        print(f"❌ Gemini API error: {e}")
+        print(f"❌ Gemini API error on {key_name}: {e}")
+        log_key_usage(key_name, "/api/text-chat", "error")
         import traceback
         traceback.print_exc()
         ai_text = "I'm having trouble connecting right now. Please try again."
@@ -374,21 +419,23 @@ def health():
     """Health check endpoint"""
     return jsonify({
         "status": "active",
-        "stt_configured": bool(GEMINI_STT_KEY),
-        "api_configured": bool(GEMINI_API_KEY),
+        "total_keys": len(gemini_clients),
+        "active_keys": list(gemini_clients.keys()),
         "gemini_api": "gemini-2.5-flash",
         "multilingual": True,
         "supported_languages": list(LANGUAGE_MAPPING.keys()),
         "audio_support": True,
-        "speech_recognition": "Gemini-native (STT)",
-        "conversation_engine": "Gemini-native (API)",
+        "speech_recognition": "Gemini-native (Load Balanced)",
+        "conversation_engine": "Gemini-native (Load Balanced)",
+        "total_rpd_capacity": len(gemini_clients) * 20,
+        "load_balancing": "Random rotation across all keys",
         "python_version": f"{os.sys.version_info.major}.{os.sys.version_info.minor}.{os.sys.version_info.micro}",
         "timestamp": datetime.now().isoformat()
     })
 
 @app.route('/api/voice-chat', methods=['POST'])
 def voice_chat():
-    """Main endpoint - process voice to voice using Gemini"""
+    """Main endpoint - process voice to voice using Gemini (Load Balanced)"""
     try:
         data = request.json
         if not data:
@@ -464,7 +511,7 @@ def voice_chat():
 
 @app.route('/api/text-chat', methods=['POST'])
 def text_chat():
-    """Text-only endpoint"""
+    """Text-only endpoint (Load Balanced)"""
     try:
         data = request.json
         if not data:
@@ -530,18 +577,56 @@ def clear_history():
         print(f"❌ Clear history error: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
+@app.route('/api/key-usage', methods=['GET'])
+def key_usage():
+    """Get API key usage statistics"""
+    try:
+        conn = sqlite3.connect(DATABASE_FILE)
+        c = conn.cursor()
+        c.execute("""
+            SELECT key_name, COUNT(*) as total_requests, 
+                   SUM(CASE WHEN status='success' THEN 1 ELSE 0 END) as successful,
+                   SUM(CASE WHEN status='error' THEN 1 ELSE 0 END) as errors
+            FROM key_usage
+            WHERE timestamp > datetime('now', '-1 day')
+            GROUP BY key_name
+        """)
+        results = c.fetchall()
+        conn.close()
+        
+        usage = {}
+        for key_name, total, success, errors in results:
+            usage[key_name] = {
+                "total_requests": total,
+                "successful": success or 0,
+                "errors": errors or 0,
+                "success_rate": f"{(success or 0) / total * 100:.1f}%" if total > 0 else "0%"
+            }
+        
+        return jsonify({
+            "active_keys": len(gemini_clients),
+            "total_capacity_rpd": len(gemini_clients) * 20,
+            "usage_last_24h": usage,
+            "load_balancing_status": "active"
+        })
+        
+    except Exception as e:
+        print(f"❌ Key usage error: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
 @app.route('/')
 def index():
-    """Homepage with embedded UI"""
-    stt_status = "✅ Configured" if GEMINI_STT_KEY else "❌ Not Configured"
-    api_status = "✅ Configured" if GEMINI_API_KEY else "❌ Not Configured"
+    """Homepage with load balancing info"""
+    keys_status = "<br>".join([f"✅ {k.upper()}" for k in gemini_clients.keys()])
+    total_rpd = len(gemini_clients) * 20
+    
     return f"""
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>🎙️ Gemini Voice AI Chatbot</title>
+    <title>🎙️ Gemini Voice AI Chatbot (Load Balanced)</title>
     <style>
         * {{
             margin: 0;
@@ -570,10 +655,6 @@ def index():
             margin-bottom: 10px;
             color: #333;
         }}
-        .header p {{
-            color: #666;
-            font-size: 16px;
-        }}
         .status-box {{
             display: grid;
             grid-template-columns: 1fr 1fr;
@@ -584,15 +665,9 @@ def index():
             padding: 15px;
             border-radius: 10px;
             font-size: 14px;
-            line-height: 1.6;
-        }}
-        .status.success {{
+            line-height: 1.8;
             background: #e8f5e9;
             border-left: 4px solid #4caf50;
-        }}
-        .status.warning {{
-            background: #fff3cd;
-            border-left: 4px solid #ffc107;
         }}
         .main-content {{
             display: grid;
@@ -615,7 +690,7 @@ def index():
             flex-direction: column;
             gap: 15px;
         }}
-        textarea, input {{
+        textarea {{
             padding: 12px;
             border: 2px solid #e0e0e0;
             border-radius: 8px;
@@ -623,51 +698,25 @@ def index():
             font-size: 14px;
             resize: vertical;
         }}
-        textarea:focus, input:focus {{
+        textarea:focus {{
             outline: none;
             border-color: #667eea;
             box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
         }}
-        .button-group {{
-            display: flex;
-            gap: 10px;
-            flex-wrap: wrap;
-        }}
         button {{
-            flex: 1;
             padding: 12px 20px;
             border: none;
             border-radius: 8px;
             font-size: 14px;
             font-weight: 600;
             cursor: pointer;
-            transition: all 0.3s ease;
-            min-width: 140px;
-        }}
-        .btn-primary {{
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white;
+            transition: all 0.3s ease;
         }}
-        .btn-primary:hover {{
+        button:hover {{
             transform: translateY(-2px);
             box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
-        }}
-        .btn-primary:active {{
-            transform: translateY(0);
-        }}
-        .btn-secondary {{
-            background: #f0f0f0;
-            color: #333;
-        }}
-        .btn-secondary:hover {{
-            background: #e0e0e0;
-        }}
-        .btn-danger {{
-            background: #ff6b6b;
-            color: white;
-        }}
-        .btn-danger:hover {{
-            background: #ff5252;
         }}
         .output {{
             margin-top: 15px;
@@ -680,44 +729,9 @@ def index():
         .output.hidden {{
             display: none;
         }}
-        .output-label {{
-            font-weight: 600;
-            color: #333;
-            margin-bottom: 8px;
-        }}
-        .output-text {{
-            color: #666;
-            word-wrap: break-word;
-        }}
-        .loading {{
-            color: #667eea;
-            font-style: italic;
-        }}
-        .error {{
-            color: #d32f2f;
-        }}
-        .success {{
-            color: #388e3c;
-        }}
         audio {{
             width: 100%;
             margin-top: 10px;
-        }}
-        #recordingStatus {{
-            display: inline-block;
-            padding: 8px 12px;
-            border-radius: 20px;
-            font-size: 12px;
-            font-weight: 600;
-            margin-top: 10px;
-        }}
-        #recordingStatus.recording {{
-            background: #ffebee;
-            color: #d32f2f;
-        }}
-        #recordingStatus.ready {{
-            background: #e8f5e9;
-            color: #388e3c;
         }}
         @media (max-width: 768px) {{
             .main-content {{
@@ -732,13 +746,13 @@ def index():
 <body>
     <div class="container">
         <div class="header">
-            <h1>🎙️ Gemini Voice AI Chatbot</h1>
-            <p>Real-time multilingual voice and text chat powered by Gemini 2.5 Flash</p>
+            <h1>🎙️ Gemini Voice AI Chatbot (Load Balanced)</h1>
+            <p>Multi-key load balancing for maximum request capacity</p>
             <div class="status-box">
-                <div class="status success">
-                    <strong>Speech-to-Text (GEMINI_STT):</strong> {stt_status}<br>
-                    <strong>Conversation (GEMINI_API_KEY):</strong> {api_status}<br>
-                    <strong>Languages:</strong> 14 supported
+                <div class="status">
+                    <strong>🔑 Active API Keys:</strong><br>
+                    {keys_status}<br><br>
+                    <strong>📊 Total RPD:</strong> {total_rpd}/day
                 </div>
                 <div class="status" id="connectionStatus">
                     <strong>Testing connection...</strong>
@@ -750,16 +764,9 @@ def index():
             <div class="card">
                 <h2>🎤 Voice Chat</h2>
                 <div class="input-group">
-                    <label>Click to record (auto-detect language):</label>
-                    <button class="btn-primary" id="recordBtn" onclick="startRecording()">🎤 Start Recording</button>
-                    <div id="recordingStatus" class="hidden"></div>
-                    <div id="transcriptOutput" class="output hidden">
-                        <div class="output-label">Transcribed Text:</div>
-                        <div class="output-text" id="transcriptText"></div>
-                    </div>
+                    <button onclick="startRecording()" id="recordBtn">🎤 Start Recording</button>
                     <div id="voiceResponseOutput" class="output hidden">
-                        <div class="output-label">AI Response:</div>
-                        <div class="output-text" id="voiceResponseText"></div>
+                        <div id="voiceResponseText"></div>
                         <audio id="responseAudio" controls></audio>
                     </div>
                 </div>
@@ -768,23 +775,19 @@ def index():
             <div class="card">
                 <h2>💬 Text Chat</h2>
                 <div class="input-group">
-                    <textarea id="userText" placeholder="Type your message here..." rows="4"></textarea>
-                    <button class="btn-primary" onclick="sendText()">Send Message</button>
+                    <textarea id="userText" placeholder="Type your message..." rows="4"></textarea>
+                    <button onclick="sendText()">Send Message</button>
                     <div id="textResponseOutput" class="output hidden">
-                        <div class="output-label">AI Response:</div>
-                        <div class="output-text" id="textResponseText"></div>
+                        <div id="textResponseText"></div>
                     </div>
                 </div>
             </div>
         </div>
 
         <div class="card" style="margin-top: 20px;">
-            <h2>⚙️ Settings</h2>
-            <div class="button-group">
-                <button class="btn-secondary" onclick="testHealth()">🔗 Test Connection</button>
-                <button class="btn-secondary" onclick="clearHistory()">🗑️ Clear History</button>
-                <button class="btn-danger" onclick="location.reload()">🔄 Reload Page</button>
-            </div>
+            <h2>📊 Load Balancing Status</h2>
+            <button onclick="checkKeyUsage()" style="margin-bottom: 20px;">View Key Usage</button>
+            <div id="keyUsageOutput"></div>
         </div>
     </div>
 
@@ -794,7 +797,6 @@ def index():
         let isRecording = false;
         let sessionId = Math.random().toString(36).substr(2, 9);
 
-        // Test connection on load
         window.addEventListener('load', testHealth);
 
         async function testHealth() {{
@@ -802,19 +804,14 @@ def index():
                 const response = await fetch('/health');
                 const data = await response.json();
                 const statusEl = document.getElementById('connectionStatus');
-                const sttStatus = data.stt_configured ? '✅' : '❌';
-                const apiStatus = data.api_configured ? '✅' : '❌';
                 statusEl.innerHTML = `
                     <strong>✅ Backend Connected</strong><br>
-                    STT Key: ${{sttStatus}}<br>
-                    API Key: ${{apiStatus}}<br>
-                    Languages: ${{data.supported_languages.length}}
+                    Active Keys: ${{data.total_keys}}<br>
+                    Total RPD: ${{data.total_rpd_capacity}}<br>
+                    Load Balancing: Active
                 `;
-                statusEl.className = 'status success';
             }} catch (error) {{
-                const statusEl = document.getElementById('connectionStatus');
-                statusEl.innerHTML = `<strong>❌ Connection Failed</strong><br>${{error.message}}`;
-                statusEl.className = 'status warning';
+                document.getElementById('connectionStatus').textContent = '❌ Connection Failed';
             }}
         }}
 
@@ -823,121 +820,73 @@ def index():
                 const stream = await navigator.mediaDevices.getUserMedia({{ audio: true }});
                 mediaRecorder = new MediaRecorder(stream);
                 audioChunks = [];
-
-                mediaRecorder.ondataavailable = (event) => {{
-                    audioChunks.push(event.data);
-                }};
-
+                mediaRecorder.ondataavailable = (e) => audioChunks.push(e.data);
                 mediaRecorder.onstop = sendAudio;
-
                 mediaRecorder.start();
                 isRecording = true;
-
-                const recordBtn = document.getElementById('recordBtn');
-                recordBtn.textContent = '⏹️ Stop Recording';
-                recordBtn.style.background = '#ff6b6b';
-
-                const statusEl = document.getElementById('recordingStatus');
-                statusEl.textContent = '🔴 Recording...';
-                statusEl.className = 'recording';
-                statusEl.classList.remove('hidden');
+                document.getElementById('recordBtn').textContent = '⏹️ Stop Recording';
             }} else {{
                 mediaRecorder.stop();
                 isRecording = false;
-
-                const recordBtn = document.getElementById('recordBtn');
-                recordBtn.textContent = '🎤 Start Recording';
-                recordBtn.style.background = '';
-
-                const statusEl = document.getElementById('recordingStatus');
-                statusEl.textContent = '⏳ Processing...';
-                statusEl.className = '';
+                document.getElementById('recordBtn').textContent = '🎤 Start Recording';
             }}
         }}
 
         async function sendAudio() {{
             const audioBlob = new Blob(audioChunks, {{ type: 'audio/webm' }});
             const reader = new FileReader();
-
             reader.onload = async () => {{
                 const audioBase64 = reader.result.split(',')[1];
-
                 try {{
                     const response = await fetch('/api/voice-chat', {{
                         method: 'POST',
                         headers: {{ 'Content-Type': 'application/json' }},
-                        body: JSON.stringify({{
-                            audio: audioBase64,
-                            session_id: sessionId
-                        }})
+                        body: JSON.stringify({{ audio: audioBase64, session_id: sessionId }})
                     }});
-
                     const data = await response.json();
-
                     if (data.success) {{
-                        document.getElementById('transcriptText').textContent = data.user_text;
-                        document.getElementById('transcriptOutput').classList.remove('hidden');
-
                         document.getElementById('voiceResponseText').textContent = data.ai_response;
                         document.getElementById('responseAudio').src = 'data:audio/mp3;base64,' + data.audio;
                         document.getElementById('voiceResponseOutput').classList.remove('hidden');
-                    }} else {{
-                        alert('Error: ' + data.error);
                     }}
                 }} catch (error) {{
-                    alert('Network error: ' + error.message);
-                }} finally {{
-                    const statusEl = document.getElementById('recordingStatus');
-                    statusEl.classList.add('hidden');
+                    alert('Error: ' + error.message);
                 }}
             }};
-
             reader.readAsDataURL(audioBlob);
         }}
 
         async function sendText() {{
             const text = document.getElementById('userText').value.trim();
-            if (!text) {{
-                alert('Please enter some text');
-                return;
-            }}
-
+            if (!text) return alert('Enter text');
             try {{
                 const response = await fetch('/api/text-chat', {{
                     method: 'POST',
                     headers: {{ 'Content-Type': 'application/json' }},
-                    body: JSON.stringify({{
-                        text: text,
-                        session_id: sessionId
-                    }})
+                    body: JSON.stringify({{ text: text, session_id: sessionId }})
                 }});
-
                 const data = await response.json();
-
                 if (data.success) {{
                     document.getElementById('textResponseText').textContent = data.ai_response;
                     document.getElementById('textResponseOutput').classList.remove('hidden');
                     document.getElementById('userText').value = '';
-                }} else {{
-                    alert('Error: ' + data.error);
                 }}
             }} catch (error) {{
-                alert('Network error: ' + error.message);
+                alert('Error: ' + error.message);
             }}
         }}
 
-        async function clearHistory() {{
-            if (!confirm('Clear conversation history?')) return;
-
+        async function checkKeyUsage() {{
             try {{
-                const response = await fetch('/api/clear-history', {{
-                    method: 'POST',
-                    headers: {{ 'Content-Type': 'application/json' }},
-                    body: JSON.stringify({{ session_id: sessionId }})
-                }});
-
+                const response = await fetch('/api/key-usage');
                 const data = await response.json();
-                alert(data.message);
+                let html = `<table style="width:100%; border-collapse: collapse;">`;
+                html += `<tr style="background:#f0f0f0;"><th style="border:1px solid #ddd; padding:10px; text-align:left;">Key</th><th style="border:1px solid #ddd; padding:10px;">Requests</th><th style="border:1px solid #ddd; padding:10px;">Success</th><th style="border:1px solid #ddd; padding:10px;">Errors</th><th style="border:1px solid #ddd; padding:10px;">Success Rate</th></tr>`;
+                for (const [key, stats] of Object.entries(data.usage_last_24h)) {{
+                    html += `<tr><td style="border:1px solid #ddd; padding:10px;">${{key.toUpperCase()}}</td><td style="border:1px solid #ddd; padding:10px;">${{stats.total_requests}}</td><td style="border:1px solid #ddd; padding:10px;">${{stats.successful}}</td><td style="border:1px solid #ddd; padding:10px;">${{stats.errors}}</td><td style="border:1px solid #ddd; padding:10px;">${{stats.success_rate}}</td></tr>`;
+                }}
+                html += `</table>`;
+                document.getElementById('keyUsageOutput').innerHTML = html;
             }} catch (error) {{
                 alert('Error: ' + error.message);
             }}
@@ -949,9 +898,9 @@ def index():
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    print(f"🚀 Starting Gemini Voice Chatbot on port {port}")
-    print(f"🎤 Using GEMINI_STT key for speech-to-text transcription")
-    print(f"💬 Using GEMINI_API_KEY for conversation responses")
-    print(f"🌍 Supports {len(LANGUAGE_MAPPING)} languages with auto-detection")
-    print(f"⚠️ Dual API keys for independent quota management")
+    print(f"🚀 Starting Gemini Voice Chatbot (Load Balanced) on port {port}")
+    print(f"🔑 Active API Keys: {len(gemini_clients)}")
+    print(f"📊 Total RPD Capacity: {len(gemini_clients) * 20}")
+    print(f"⚖️ Load Balancing: Enabled (Random Rotation)")
+    print(f"🌍 Languages Supported: {len(LANGUAGE_MAPPING)}")
     app.run(host='0.0.0.0', port=port, debug=False)
