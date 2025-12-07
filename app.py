@@ -210,86 +210,115 @@ CONVERSATION HISTORY (Remember this context):
 
     return prompt
 
-# ========== AI FUNCTIONS ==========
+# ========== AI FUNCTIONS WITH QUOTA AWARENESS ==========
 def transcribe_with_gemini(audio_bytes, mime_type="audio/webm"):
     if not gemini_clients:
         return "Speech-to-text service not configured.", "en"
     
-    key_name = get_random_key()
-    client = gemini_clients[key_name]
+    # Try each key
+    available_keys = list(gemini_clients.keys())
+    random.shuffle(available_keys)
     
-    try:
-        print(f"🎤 Transcribing with {key_name.upper()}...")
-        
-        prompt = """Listen to this audio and transcribe the speech to text.
+    for key_name in available_keys:
+        try:
+            client = gemini_clients[key_name]
+            
+            print(f"🎤 Transcribing with {key_name.upper()}...")
+            
+            prompt = """Listen to this audio and transcribe the speech to text.
 Detect the language and return ONLY a valid JSON response:
 {"text": "transcribed text", "language": "en", "confidence": 0.95}"""
-        
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=[prompt, types.Part.from_bytes(data=audio_bytes, mime_type=mime_type)],
-            config=types.GenerateContentConfig(
-                temperature=0.1,
-                max_output_tokens=2048,
-            )
-        )
-        
-        result_text = response.text.strip() if hasattr(response, 'text') else ""
-        
-        if "json" in result_text.lower() and '`' in result_text:
-            result_text = result_text.replace('```json', '').replace('```', '').strip()
-        
-        try:
-            result = json.loads(result_text)
-            text = result.get("text", "").strip()
-            language = result.get("language", "en")
-            if not text:
-                return "Could not hear that clearly. Please repeat.", "en"
-            return text, language
-        except:
-            return "Could not understand audio.", "en"
             
-    except Exception as e:
-        print(f"❌ STT error: {e}")
-        return "Error processing audio.", "en"
+            response = client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=[prompt, types.Part.from_bytes(data=audio_bytes, mime_type=mime_type)],
+                config=types.GenerateContentConfig(
+                    temperature=0.1,
+                    max_output_tokens=2048,
+                )
+            )
+            
+            result_text = response.text.strip() if hasattr(response, 'text') else ""
+            
+            if "json" in result_text.lower() and '`' in result_text:
+                result_text = result_text.replace('```json', '').replace('```', '').strip()
+            
+            try:
+                result = json.loads(result_text)
+                text = result.get("text", "").strip()
+                language = result.get("language", "en")
+                if not text:
+                    return "Could not hear that clearly. Please repeat.", "en"
+                print(f"✅ Transcribed with {key_name.upper()}: {text}")
+                return text, language
+            except:
+                return "Could not understand audio.", "en"
+                
+        except Exception as e:
+            error_msg = str(e)
+            
+            # If quota exceeded, try next key
+            if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg or "quota" in error_msg.lower():
+                print(f"⚠️ {key_name.upper()} quota exceeded, trying next key...")
+                continue
+            else:
+                print(f"❌ {key_name.upper()} error: {e}")
+                continue
+    
+    # If all keys failed
+    return "❌ All API keys have hit their quota. STT unavailable.", "en"
 
 def get_ai_response(text, user_details, offer_details, chat_history, mode, language):
     if not gemini_clients:
         return "AI service not configured."
     
-    key_name = get_random_key()
-    client = gemini_clients[key_name]
+    # Try each key - skip ones that hit quota
+    available_keys = list(gemini_clients.keys())
+    random.shuffle(available_keys)
     
-    if mode == 'employer_interview':
-        system_prompt = build_employer_interview_prompt(user_details, offer_details, chat_history)
-    else:
-        system_prompt = build_system_prompt(user_details, offer_details, chat_history)
-    
-    full_prompt = f"{system_prompt}\n\n--- CURRENT MESSAGE ---\n{text}"
-    
-    try:
-        print(f"📤 Sending to {key_name.upper()}...")
-        
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=full_prompt,
-            config=types.GenerateContentConfig(
-                temperature=0.7,
-                max_output_tokens=2048,
-            )
-        )
-        
-        ai_text = response.text.strip() if hasattr(response, 'text') else ""
-        
-        if ai_text:
-            print(f"✅ Response: {ai_text[:80]}...")
-            return ai_text
-        else:
-            return "Sorry, I couldn't generate a response."
+    for key_name in available_keys:
+        try:
+            client = gemini_clients[key_name]
             
-    except Exception as e:
-        print(f"❌ Error: {e}")
-        return "I'm having trouble connecting. Please try again."
+            if mode == 'employer_interview':
+                system_prompt = build_employer_interview_prompt(user_details, offer_details, chat_history)
+            else:
+                system_prompt = build_system_prompt(user_details, offer_details, chat_history)
+            
+            full_prompt = f"{system_prompt}\n\n--- CURRENT MESSAGE ---\n{text}"
+            
+            print(f"📤 Trying {key_name.upper()}...")
+            
+            response = client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=full_prompt,
+                config=types.GenerateContentConfig(
+                    temperature=0.7,
+                    max_output_tokens=2048,
+                )
+            )
+            
+            ai_text = response.text.strip() if hasattr(response, 'text') else ""
+            
+            if ai_text:
+                print(f"✅ Response from {key_name.upper()}: {ai_text[:80]}...")
+                return ai_text
+            else:
+                return "Sorry, I couldn't generate a response."
+                
+        except Exception as e:
+            error_msg = str(e)
+            
+            # If quota exceeded, try next key
+            if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg or "quota" in error_msg.lower():
+                print(f"⚠️ {key_name.upper()} quota exceeded, trying next key...")
+                continue
+            else:
+                print(f"❌ {key_name.upper()} error: {e}")
+                continue
+    
+    # If all keys failed
+    return "❌ All API keys have hit their quota. Please try again in a few hours or upgrade to a paid plan."
 
 def text_to_speech(text, language='en'):
     try:
@@ -564,6 +593,25 @@ HTML_TEMPLATE = """
             color: #c62828;
         }
         
+        .quota-check {
+            margin-top: 15px;
+            padding: 10px;
+            background: #f5f5f5;
+            border-radius: 8px;
+            text-align: center;
+        }
+        
+        .quota-check a {
+            color: #667eea;
+            text-decoration: none;
+            font-size: 11px;
+            font-weight: 600;
+        }
+        
+        .quota-check a:hover {
+            text-decoration: underline;
+        }
+        
         @media (max-width: 768px) {
             .container {
                 grid-template-columns: 1fr;
@@ -656,7 +704,7 @@ HTML_TEMPLATE = """
                 <input type="text" id="location" value="Paris, France">
             </div>
             
-            <h3 style="font-size: 14px; margin-top: 20px; margin-bottom: 10px; color: #666;">Chat History (from previous session)</h3>
+            <h3 style="font-size: 14px; margin-top: 20px; margin-bottom: 10px; color: #666;">Chat History</h3>
             
             <div class="form-group">
                 <label>Previous Messages (JSON array)</label>
@@ -664,6 +712,10 @@ HTML_TEMPLATE = """
             </div>
             
             <button onclick="startNewSession()" style="width: 100%; margin-top: 20px;">🔄 Start New Session</button>
+            
+            <div class="quota-check">
+                <a href="/api/quota-status" target="_blank">🔍 Check API Quota Status</a>
+            </div>
         </div>
         
         <!-- Chat Container -->
@@ -998,7 +1050,7 @@ def voice_chat():
         transcribed_text, detected_language = transcribe_with_gemini(audio_bytes, "audio/webm")
         print(f"✅ Transcribed: {transcribed_text}")
         
-        if "error" in transcribed_text.lower() or "could" in transcribed_text.lower():
+        if "error" in transcribed_text.lower() or "could" in transcribed_text.lower() or "quota" in transcribed_text.lower():
             return jsonify({
                 "success": False,
                 "error": transcribed_text
@@ -1030,12 +1082,40 @@ def voice_chat():
         traceback.print_exc()
         return jsonify({"success": False, "error": str(e)}), 500
 
+@app.route('/api/quota-status', methods=['GET'])
+def quota_status():
+    status = {}
+    for key_name in gemini_clients.keys():
+        try:
+            client = gemini_clients[key_name]
+            response = client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents="ping",
+                config=types.GenerateContentConfig(
+                    temperature=0.1,
+                    max_output_tokens=10,
+                )
+            )
+            status[key_name] = "✅ Available"
+        except Exception as e:
+            if "quota" in str(e).lower() or "429" in str(e):
+                status[key_name] = "❌ Quota Exceeded"
+            else:
+                status[key_name] = f"⚠️ {str(e)[:50]}"
+    
+    return jsonify({
+        "timestamp": datetime.now().isoformat(),
+        "keys": status,
+        "total_keys": len(gemini_clients),
+        "available_keys": sum(1 for v in status.values() if "Available" in v)
+    })
+
 @app.route('/health', methods=['GET'])
 def health():
     return jsonify({
         "status": "active",
         "keys": len(gemini_clients),
-        "endpoints": ["/", "/api/text-chat", "/api/voice-chat"]
+        "endpoints": ["/", "/api/text-chat", "/api/voice-chat", "/api/quota-status"]
     })
 
 if __name__ == '__main__':
@@ -1044,5 +1124,5 @@ if __name__ == '__main__':
     print(f"🚀 Port: {port}")
     print(f"🔑 Active Keys: {len(gemini_clients)}")
     print(f"📍 URL: https://voice-chatbot-k3fe.onrender.com")
-    print(f"🧠 Features: Text + Voice Chat + Conversation Memory")
+    print(f"🧠 Features: Text + Voice Chat + Conversation Memory + Multi-Key Fallback")
     app.run(host='0.0.0.0', port=port, debug=False)
