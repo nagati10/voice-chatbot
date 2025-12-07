@@ -694,7 +694,7 @@ HTML_TEMPLATE = """
     </div>
 
     <script>
-        const API_URL = 'http://localhost:5000';
+        const API_URL = 'https://voice-chatbot-k3fe.onrender.com';
         let currentMode = 'coaching';
         let sessionId = 'session_' + Date.now();
         let isRecording = false;
@@ -1043,6 +1043,6 @@ if __name__ == '__main__':
     print(f"🚀 Starting Talleb 5edma - Interview Coaching")
     print(f"🚀 Port: {port}")
     print(f"🔑 Active Keys: {len(gemini_clients)}")
-    print(f"📍 Open: http://localhost:{port}")
+    print(f"📍 URL: https://voice-chatbot-k3fe.onrender.com")
     print(f"🧠 Features: Text + Voice Chat + Conversation Memory")
     app.run(host='0.0.0.0', port=port, debug=False)
