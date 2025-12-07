@@ -22,36 +22,36 @@ DATABASE_FILE = "conversations.db"
 
 # Language code mapping for gTTS
 LANGUAGE_MAPPING = {
-    'en': 'en',      # English
-    'es': 'es',      # Spanish
-    'fr': 'fr',      # French
-    'de': 'de',      # German
-    'it': 'it',      # Italian
-    'pt': 'pt',      # Portuguese
-    'ru': 'ru',      # Russian
-    'ja': 'ja',      # Japanese
-    'ko': 'ko',      # Korean
-    'zh': 'zh',      # Chinese
-    'zh-cn': 'zh',   # Chinese Simplified
+    'en': 'en',    # English
+    'es': 'es',    # Spanish
+    'fr': 'fr',    # French
+    'de': 'de',    # German
+    'it': 'it',    # Italian
+    'pt': 'pt',    # Portuguese
+    'ru': 'ru',    # Russian
+    'ja': 'ja',    # Japanese
+    'ko': 'ko',    # Korean
+    'zh': 'zh',    # Chinese
+    'zh-cn': 'zh', # Chinese Simplified
     'zh-tw': 'zh-tw', # Chinese Traditional
-    'ar': 'ar',      # Arabic
-    'hi': 'hi',      # Hindi
+    'ar': 'ar',    # Arabic
+    'hi': 'hi',    # Hindi
 }
 
 if not GEMINI_API_KEY:
     print("⚠️ WARNING: GEMINI_API_KEY not set!")
 else:
     print("✅ GEMINI_API_KEY is configured")
-    # Initialize Gemini client
-    client = genai.Client(api_key=GEMINI_API_KEY)
+
+# Initialize Gemini client
+client = genai.Client(api_key=GEMINI_API_KEY)
 
 # Initialize database
 def init_db():
     conn = sqlite3.connect(DATABASE_FILE)
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS conversations
-                 (session_id TEXT, timestamp DATETIME, 
-                  user_input TEXT, ai_response TEXT, language TEXT)''')
+                 (session_id TEXT, timestamp DATETIME, user_input TEXT, ai_response TEXT, language TEXT)''')
     conn.commit()
     conn.close()
 
@@ -62,11 +62,9 @@ def preprocess_audio(audio_bytes):
     """Simple audio preprocessing without pydub"""
     try:
         print(f"🎵 Processing audio: {len(audio_bytes)} bytes")
-        
         # Just return the audio as-is - Gemini can handle WebM
         # If you really need MP3, you can use an online service or different library
         return audio_bytes, "audio/webm"
-            
     except Exception as e:
         print(f"❌ Audio processing error: {e}")
         return audio_bytes, "audio/webm"
@@ -81,25 +79,23 @@ def transcribe_with_gemini(audio_bytes, mime_type="audio/webm"):
         print(f"🎤 Transcribing with Gemini ({len(audio_bytes)} bytes, {mime_type})...")
         
         # Improved prompt for better Arabic and multilingual support
-        prompt = """Transcribe this speech to text. 
-        
-        IMPORTANT INSTRUCTIONS:
-        1. Detect the language accurately (especially for Arabic, Chinese, Japanese, Korean)
-        2. If the speech is in Arabic, transcribe it carefully with proper Arabic script
-        3. For any language, transcribe exactly what you hear
-        4. Provide ONLY a JSON response with this exact format:
-        {
-            "text": "the transcribed text here",
-            "language": "language code (en, es, fr, ar, zh, ja, ko, ru, etc.)",
-            "confidence": 0.95
-        }
-        
-        If you cannot understand anything, return:
-        {
-            "text": "",
-            "language": "unknown",
-            "confidence": 0.0
-        }"""
+        prompt = """Transcribe this speech to text. IMPORTANT INSTRUCTIONS:
+1. Detect the language accurately (especially for Arabic, Chinese, Japanese, Korean)
+2. If the speech is in Arabic, transcribe it carefully with proper Arabic script
+3. For any language, transcribe exactly what you hear
+4. Provide ONLY a JSON response with this exact format:
+{
+    "text": "the transcribed text here",
+    "language": "language code (en, es, fr, ar, zh, ja, ko, ru, etc.)",
+    "confidence": 0.95
+}
+
+If you cannot understand anything, return:
+{
+    "text": "",
+    "language": "unknown",
+    "confidence": 0.0
+}"""
         
         # Send to Gemini
         response = client.models.generate_content(
@@ -124,13 +120,12 @@ def transcribe_with_gemini(audio_bytes, mime_type="audio/webm"):
         # Try to parse as JSON
         try:
             # Clean the response
-            if "```json" in result_text:
-                result_text = result_text.split("```json")[1].split("```")[0].strip()
+            if "```
+                result_text = result_text.split("```json").split("```
             elif "```" in result_text:
-                result_text = result_text.split("```")[1].strip()
+                result_text = result_text.split("```
             
             result = json.loads(result_text)
-            
             text = result.get("text", "").strip()
             language = result.get("language", "unknown")
             confidence = result.get("confidence", 0)
@@ -240,7 +235,7 @@ def get_conversation_history(session_id, limit=5):
     try:
         conn = sqlite3.connect(DATABASE_FILE)
         c = conn.cursor()
-        c.execute("SELECT user_input, ai_response, language FROM conversations WHERE session_id=? ORDER BY timestamp DESC LIMIT ?", 
+        c.execute("SELECT user_input, ai_response, language FROM conversations WHERE session_id=? ORDER BY timestamp DESC LIMIT ?",
                   (session_id, limit))
         history = c.fetchall()
         conn.close()
@@ -249,10 +244,9 @@ def get_conversation_history(session_id, limit=5):
         print(f"Database error: {e}")
         return []
 
-# ========== AI RESPONSE ==========
+# ========== AI RESPONSE (UPDATED WITH BETTER ERROR LOGGING) ==========
 def get_ai_response(text, session_id="default", language='en'):
     """Get response from Gemini 2.5 Flash"""
-    
     if not GEMINI_API_KEY:
         return "AI service is not configured. Please set GEMINI_API_KEY environment variable.", language
     
@@ -288,30 +282,77 @@ def get_ai_response(text, session_id="default", language='en'):
     full_prompt = f"""{context}User: {text}
 
 {instruction}
-
 IMPORTANT: Respond ONLY in {language} language. Keep it natural and conversational."""
     
     try:
+        print(f"📤 Sending to Gemini: {full_prompt[:200]}...")
+        
         # Generate content with Gemini
         response = client.models.generate_content(
             model="gemini-2.5-flash",
             contents=full_prompt,
             config=types.GenerateContentConfig(
                 temperature=0.7,
-                max_output_tokens=150
+                max_output_tokens=150,
+                # Add safety settings to be less restrictive
+                safety_settings=[
+                    types.SafetySetting(
+                        category="HARM_CATEGORY_HARASSMENT",
+                        threshold="BLOCK_NONE"
+                    ),
+                    types.SafetySetting(
+                        category="HARM_CATEGORY_HATE_SPEECH",
+                        threshold="BLOCK_NONE"
+                    ),
+                    types.SafetySetting(
+                        category="HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                        threshold="BLOCK_NONE"
+                    ),
+                    types.SafetySetting(
+                        category="HARM_CATEGORY_DANGEROUS_CONTENT",
+                        threshold="BLOCK_NONE"
+                    ),
+                ]
             )
         )
         
+        # DEBUG: Log full response object
+        print(f"📦 Response object: {response}")
+        print(f"📦 Response candidates: {response.candidates if hasattr(response, 'candidates') else 'N/A'}")
+        
+        # Check if response was blocked
+        if hasattr(response, 'prompt_feedback'):
+            print(f"⚠️ Prompt feedback: {response.prompt_feedback}")
+            if hasattr(response.prompt_feedback, 'block_reason'):
+                print(f"🚫 Blocked reason: {response.prompt_feedback.block_reason}")
+        
         # Extract text from response
-        if response and response.text:
+        if response and hasattr(response, 'text') and response.text:
             ai_text = response.text.strip()
             print(f"✅ Gemini response ({language}): {ai_text[:100]}...")
+        elif response and hasattr(response, 'candidates') and response.candidates:
+            # Try to get text from first candidate
+            candidate = response.candidates
+            print(f"📋 Candidate: {candidate}")
+            if hasattr(candidate, 'content') and candidate.content:
+                if hasattr(candidate.content, 'parts') and candidate.content.parts:
+                    ai_text = candidate.content.parts.text.strip()
+                    print(f"✅ Extracted from candidate ({language}): {ai_text[:100]}...")
+                else:
+                    print(f"⚠️ No parts in candidate content")
+                    ai_text = "I'm having trouble generating a response. Please try again."
+            else:
+                print(f"⚠️ No content in candidate")
+                ai_text = "I'm having trouble generating a response. Please try again."
         else:
-            print("⚠️ Empty response from Gemini")
+            print(f"⚠️ Empty response from Gemini - Response: {response}")
             ai_text = "I heard you, but I'm having trouble responding right now. Could you rephrase that?"
-        
+            
     except Exception as e:
         print(f"❌ Gemini API error: {e}")
+        print(f"❌ Error type: {type(e).__name__}")
+        import traceback
+        traceback.print_exc()
         
         # Fallback responses
         fallback_responses = {
@@ -321,14 +362,13 @@ IMPORTANT: Respond ONLY in {language} language. Keep it natural and conversation
             'ar': "أواجه صعوبة في الاتصال بخدمة الذكاء الاصطناعي الخاصة بي في الوقت الحالي. يرجى المحاولة مرة أخرى في لحظة.",
             'de': "Ich habe gerade Probleme, mich mit meinem KI-Dienst zu verbinden. Bitte versuchen Sie es in einem Moment erneut.",
             'ja': "現在、AIサービスに接続するのに問題が発生しています。しばらくしてからもう一度お試しください。",
-            'ko': "현재 AI 서비스에 연결하는 데問題가 있습니다。잠시後 다시 시도해 주세요。",
+            'ko': "현재 AI 서비스에 연결하는 데 문제가 있습니다. 잠시 후 다시 시도해 주세요.",
             'zh': "我目前连接AI服务时遇到问题。请稍后再试。",
             'hi': "मुझे अभी अपनी AI सेवा से कनेक्ट होने में परेशानी हो रही है। कृपया एक पल में फिर से प्रयास करें।",
             'ru': "У меня возникли проблемы с подключением к моему сервису ИИ. Пожалуйста, попробуйте еще раз через мгновение.",
             'pt': "Estou tendo problemas para me conectar ao meu serviço de IA no momento. Por favor, tente novamente em um momento.",
             'it': "Sto avendo problemi a connettermi al mio servizio di IA in questo momento. Per favore, riprova tra un momento.",
         }
-        
         ai_text = fallback_responses.get(language, fallback_responses['en'])
     
     # Save to memory
@@ -342,16 +382,15 @@ def text_to_speech(text, language='en'):
     try:
         # Map language code
         tts_lang = LANGUAGE_MAPPING.get(language, 'en')
-        
         tts = gTTS(text=text, lang=tts_lang, slow=False)
+        
         audio_buffer = io.BytesIO()
         tts.write_to_fp(audio_buffer)
         audio_buffer.seek(0)
-        
         audio_bytes = audio_buffer.read()
+        
         print(f"✅ Generated TTS audio ({tts_lang}): {len(audio_bytes)} bytes")
         return audio_bytes
-        
     except Exception as e:
         print(f"❌ TTS error: {e}")
         # Fallback to English
@@ -388,7 +427,6 @@ def voice_chat():
     """Main endpoint - process voice to voice using Gemini"""
     try:
         data = request.json
-        
         if not data:
             return jsonify({"success": False, "error": "No JSON data received"}), 400
         
@@ -419,7 +457,7 @@ def voice_chat():
         # Check if transcription failed
         if not user_text or len(user_text.strip()) < 2:
             return jsonify({
-                "success": False, 
+                "success": False,
                 "error": "Could not understand speech. Please try speaking more clearly.",
                 "user_text": user_text,
                 "detected_language": detected_language
@@ -472,7 +510,6 @@ def text_chat():
     """Text-only endpoint"""
     try:
         data = request.json
-        
         if not data:
             return jsonify({"success": False, "error": "No JSON data received"}), 400
         
@@ -496,6 +533,7 @@ def text_chat():
         
         # Get AI response
         ai_response, response_language = get_ai_response(text, session_id, detected_language)
+        
         print(f"✅ AI response ({response_language}): {ai_response[:100]}...")
         
         return jsonify({
@@ -542,170 +580,178 @@ def clear_history():
 def index():
     """Homepage"""
     gemini_status = "✅ Configured" if GEMINI_API_KEY else "❌ Not Configured"
-    
     return f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>🎤 Gemini Voice AI Chatbot</title>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <style>
-            body {{
-                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
-                padding: 40px;
-                max-width: 900px;
-                margin: 0 auto;
-                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                min-height: 100vh;
-            }}
-            .container {{
-                background: white;
-                padding: 40px;
-                border-radius: 15px;
-                box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-            }}
-            h1 {{ color: #333; margin-bottom: 10px; }}
-            .status {{
-                background: #e8f5e9;
-                padding: 20px;
-                border-radius: 10px;
-                margin: 20px 0;
-                border-left: 5px solid #4caf50;
-            }}
-            .status.warning {{ background: #fff3cd; border-left-color: #ffc107; }}
-            .languages-grid {{
-                display: grid;
-                grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
-                gap: 10px;
-                margin: 20px 0;
-            }}
-            .language-tag {{
-                background: #e3f2fd;
-                padding: 8px 12px;
-                border-radius: 20px;
-                text-align: center;
-                font-size: 14px;
-                border: 1px solid #bbdefb;
-            }}
-            .endpoint {{
-                background: #f5f5f5;
-                padding: 15px;
-                margin: 15px 0;
-                border-left: 4px solid #2196F3;
-                font-family: 'Courier New', monospace;
-                border-radius: 5px;
-            }}
-            button {{
-                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                color: white;
-                border: none;
-                padding: 12px 30px;
-                border-radius: 50px;
-                font-size: 16px;
-                cursor: pointer;
-                margin: 10px 5px;
-                transition: transform 0.2s;
-            }}
-            button:hover {{ transform: scale(1.05); }}
-            #testResult {{
-                margin-top: 20px;
-                padding: 15px;
-                border-radius: 10px;
-                background: #f5f5f5;
-                min-height: 60px;
-            }}
-            .success {{ color: #4caf50; }}
-            .error {{ color: #f44336; }}
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <h1>🎤 Gemini Voice AI Chatbot</h1>
-            <p style="color: #666;">Real-time Speech-to-Speech using Gemini 2.5 Flash</p>
-            
-            <div class="status">
-                <p><strong>Status:</strong> ✅ Active</p>
-                <p><strong>Speech Recognition:</strong> ✅ Gemini-native</p>
-                <p><strong>Multilingual:</strong> ✅ Auto-detection</p>
-                <p><strong>Arabic Support:</strong> ✅ Improved</p>
-            </div>
-            
-            <div class="status {'warning' if not GEMINI_API_KEY else ''}">
-                <p><strong>Gemini 2.5 Flash:</strong> {gemini_status}</p>
-            </div>
-            
-            <h3>🌐 Supported Languages (Auto-detected)</h3>
-            <div class="languages-grid">
-                <div class="language-tag">English</div>
-                <div class="language-tag">Spanish</div>
-                <div class="language-tag">French</div>
-                <div class="language-tag">Arabic</div>
-                <div class="language-tag">German</div>
-                <div class="language-tag">Italian</div>
-                <div class="language-tag">Japanese</div>
-                <div class="language-tag">Korean</div>
-                <div class="language-tag">Chinese</div>
-                <div class="language-tag">Hindi</div>
-                <div class="language-tag">Russian</div>
-                <div class="language-tag">Portuguese</div>
-            </div>
-            
-            <h2>API Endpoints</h2>
-            <div class="endpoint"><strong>POST</strong> /api/voice-chat - Voice chat with auto language detection</div>
-            <div class="endpoint"><strong>POST</strong> /api/text-chat - Text chat</div>
-            <div class="endpoint"><strong>POST</strong> /api/clear-history - Clear history</div>
-            <div class="endpoint"><strong>GET</strong> /health - Health check</div>
-            
-            <h3>Features</h3>
-            <ul>
-                <li>✅ Speech-to-text using Gemini 2.5 Flash</li>
-                <li>✅ Automatic language detection from audio</li>
-                <li>✅ Improved Arabic support with better transcription</li>
-                <li>✅ Multilingual responses in same language</li>
-                <li>✅ Text-to-speech with gTTS</li>
-                <li>✅ Conversation memory</li>
-                <li>✅ Free to use (Render + Gemini free tier)</li>
-            </ul>
-            
-            <button onclick="testHealth()">Test Health</button>
-            
-            <div id="testResult"></div>
-            
-            <script>
-                async function testHealth() {{
-                    const result = document.getElementById('testResult');
-                    result.innerHTML = '<div style="color: orange;">Checking...</div>';
-                    
-                    try {{
-                        const response = await fetch('/health');
-                        const data = await response.json();
-                        
-                        result.innerHTML = 
-                            '<div class="success">' +
-                                '<strong>✅ Healthy</strong><br>' +
-                                'Gemini: ' + (data.gemini_configured ? '✅' : '❌') + '<br>' +
-                                'Audio Support: ' + (data.audio_support ? '✅' : '❌') + '<br>' +
-                                'Multilingual: ' + (data.multilingual ? '✅' : '❌') + '<br>' +
-                                'Languages: ' + data.supported_languages.length +
-                            '</div>';
-                    }} catch (error) {{
-                        result.innerHTML = '<div class="error"><strong>❌ Failed:</strong> ' + error.message + '</div>';
-                    }}
-                }}
-                
-                window.addEventListener('load', testHealth);
-            </script>
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Gemini Voice AI Chatbot</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        body {{
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+            padding: 40px;
+            max-width: 900px;
+            margin: 0 auto;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+        }}
+        .container {{
+            background: white;
+            padding: 40px;
+            border-radius: 15px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+        }}
+        h1 {{
+            color: #333;
+            margin-bottom: 10px;
+        }}
+        .status {{
+            background: #e8f5e9;
+            padding: 20px;
+            border-radius: 10px;
+            margin: 20px 0;
+            border-left: 5px solid #4caf50;
+        }}
+        .status.warning {{
+            background: #fff3cd;
+            border-left-color: #ffc107;
+        }}
+        .languages-grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+            gap: 10px;
+            margin: 20px 0;
+        }}
+        .language-tag {{
+            background: #e3f2fd;
+            padding: 8px 12px;
+            border-radius: 20px;
+            text-align: center;
+            font-size: 14px;
+            border: 1px solid #bbdefb;
+        }}
+        .endpoint {{
+            background: #f5f5f5;
+            padding: 15px;
+            margin: 15px 0;
+            border-left: 4px solid #2196F3;
+            font-family: 'Courier New', monospace;
+            border-radius: 5px;
+        }}
+        button {{
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 12px 30px;
+            border-radius: 50px;
+            font-size: 16px;
+            cursor: pointer;
+            margin: 10px 5px;
+            transition: transform 0.2s;
+        }}
+        button:hover {{
+            transform: scale(1.05);
+        }}
+        #testResult {{
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 10px;
+            background: #f5f5f5;
+            min-height: 60px;
+        }}
+        .success {{
+            color: #4caf50;
+        }}
+        .error {{
+            color: #f44336;
+        }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎙️ Gemini Voice AI Chatbot</h1>
+        <p style="color: #666;">Real-time Speech-to-Speech using Gemini 2.5 Flash</p>
+        
+        <div class="status">
+            <p><strong>Status:</strong> ✅ Active</p>
+            <p><strong>Speech Recognition:</strong> ✅ Gemini-native</p>
+            <p><strong>Multilingual:</strong> ✅ Auto-detection</p>
+            <p><strong>Arabic Support:</strong> ✅ Improved</p>
         </div>
-    </body>
-    </html>
-    """
+        
+        <div class="status {'warning' if not GEMINI_API_KEY else ''}">
+            <p><strong>Gemini 2.5 Flash:</strong> {gemini_status}</p>
+        </div>
+        
+        <h3>✨ Supported Languages (Auto-detected)</h3>
+        <div class="languages-grid">
+            <div class="language-tag">English</div>
+            <div class="language-tag">Spanish</div>
+            <div class="language-tag">French</div>
+            <div class="language-tag">Arabic</div>
+            <div class="language-tag">German</div>
+            <div class="language-tag">Italian</div>
+            <div class="language-tag">Japanese</div>
+            <div class="language-tag">Korean</div>
+            <div class="language-tag">Chinese</div>
+            <div class="language-tag">Hindi</div>
+            <div class="language-tag">Russian</div>
+            <div class="language-tag">Portuguese</div>
+        </div>
+        
+        <h2>API Endpoints</h2>
+        <div class="endpoint"><strong>POST</strong> /api/voice-chat - Voice chat with auto language detection</div>
+        <div class="endpoint"><strong>POST</strong> /api/text-chat - Text chat</div>
+        <div class="endpoint"><strong>POST</strong> /api/clear-history - Clear history</div>
+        <div class="endpoint"><strong>GET</strong> /health - Health check</div>
+        
+        <h3>Features</h3>
+        <ul>
+            <li>✅ Speech-to-text using Gemini 2.5 Flash</li>
+            <li>✅ Automatic language detection from audio</li>
+            <li>✅ Improved Arabic support with better transcription</li>
+            <li>✅ Multilingual responses in same language</li>
+            <li>✅ Text-to-speech with gTTS</li>
+            <li>✅ Conversation memory</li>
+            <li>✅ Free to use (Render + Gemini free tier)</li>
+        </ul>
+        
+        <button onclick="testHealth()">Test Health</button>
+        <div id="testResult"></div>
+    </div>
+    
+    <script>
+        async function testHealth() {{
+            const result = document.getElementById('testResult');
+            result.innerHTML = '<div style="color: orange;">Checking...</div>';
+            
+            try {{
+                const response = await fetch('/health');
+                const data = await response.json();
+                result.innerHTML = `<div class="success">
+                    <strong>✅ Healthy!</strong><br>
+                    Gemini: ${{data.gemini_configured ? '✅' : '❌'}}<br>
+                    Audio Support: ${{data.audio_support ? '✅' : '❌'}}<br>
+                    Multilingual: ${{data.multilingual ? '✅' : '❌'}}<br>
+                    Languages: ${{data.supported_languages.length}}
+                </div>`;
+            }} catch (error) {{
+                result.innerHTML = `<div class="error"><strong>❌ Failed:</strong> ${{error.message}}</div>`;
+            }}
+        }}
+        
+        window.addEventListener('load', testHealth);
+    </script>
+</body>
+</html>
+"""
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     print(f"🚀 Starting Gemini Voice Chatbot on port {port}")
     print(f"🤖 Using Gemini 2.5 Flash for speech recognition")
-    print(f"🌐 Supports {len(LANGUAGE_MAPPING)} languages with auto-detection")
-    print(f"🔊 Speech-to-text: Gemini-native")
-    print(f"📝 Note: Using simplified audio processing for Python 3.13 compatibility")
+    print(f"🌍 Supports {len(LANGUAGE_MAPPING)} languages with auto-detection")
+    print(f"🎤 Speech-to-text: Gemini-native")
+    print(f"⚠️ Note: Using simplified audio processing for Python 3.13 compatibility")
     app.run(host='0.0.0.0', port=port, debug=False)
