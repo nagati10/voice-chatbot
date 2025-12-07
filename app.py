@@ -1,117 +1,242 @@
+# Remove pydub import and replace with alternative approach
 import io
 import os
+import wave
 import base64
 from datetime import datetime
 import sqlite3
+import tempfile
 import json
-from flask import Flask, request, jsonify, render_template_string
+from flask import Flask, request, jsonify
 from flask_cors import CORS
 from google import genai
 from google.genai import types
 from gtts import gTTS
-import random
 
 app = Flask(__name__)
 CORS(app)
 
-# ========== CONFIG ==========
-GEMINI_KEYS = {
-    'key1': os.getenv("GEMINI_KEY1"),
-    'key2': os.getenv("GEMINI_KEY2"),
-    'key3': os.getenv("GEMINI_KEY3"),
-    'key4': os.getenv("GEMINI_KEY4"),
-    'key5': os.getenv("GEMINI_KEY5"),
-}
-ACTIVE_KEYS = {k: v for k, v in GEMINI_KEYS.items() if v}
-
+# ========== CONFIG - DUAL API KEYS ==========
+GEMINI_STT_KEY = os.getenv("GEMINI_STT")  # For Speech-to-Text (transcription)
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")  # For conversation/AI responses
 DATABASE_FILE = "conversations.db"
 
+# Language code mapping for gTTS
 LANGUAGE_MAPPING = {
-    'en': 'en',
-    'es': 'es',
-    'fr': 'fr',
-    'de': 'de',
-    'it': 'it',
-    'pt': 'pt',
-    'ru': 'ru',
-    'ja': 'ja',
-    'ko': 'ko',
-    'zh': 'zh',
-    'zh-cn': 'zh',
-    'zh-tw': 'zh-tw',
-    'ar': 'ar',
-    'hi': 'hi',
+    'en': 'en',    # English
+    'es': 'es',    # Spanish
+    'fr': 'fr',    # French
+    'de': 'de',    # German
+    'it': 'it',    # Italian
+    'pt': 'pt',    # Portuguese
+    'ru': 'ru',    # Russian
+    'ja': 'ja',    # Japanese
+    'ko': 'ko',    # Korean
+    'zh': 'zh',    # Chinese
+    'zh-cn': 'zh', # Chinese Simplified
+    'zh-tw': 'zh-tw', # Chinese Traditional
+    'ar': 'ar',    # Arabic
+    'hi': 'hi',    # Hindi
 }
 
-gemini_clients = {}
-for key_name, api_key in ACTIVE_KEYS.items():
-    gemini_clients[key_name] = genai.Client(api_key=api_key)
-    print(f"✅ {key_name.upper()} configured")
-
-if not gemini_clients:
-    print("⚠️ WARNING: No Gemini API keys configured!")
+if not GEMINI_STT_KEY:
+    print("⚠️ WARNING: GEMINI_STT not set!")
 else:
-    print(f"🎯 Total active keys: {len(gemini_clients)}")
+    print("✅ GEMINI_STT is configured")
 
+if not GEMINI_API_KEY:
+    print("⚠️ WARNING: GEMINI_API_KEY not set!")
+else:
+    print("✅ GEMINI_API_KEY is configured")
 
-# ========== DATABASE ==========
+# Initialize Gemini clients (one for each API key)
+client_stt = genai.Client(api_key=GEMINI_STT_KEY) if GEMINI_STT_KEY else None
+client_conversation = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+
+# Initialize database
 def init_db():
     conn = sqlite3.connect(DATABASE_FILE)
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS conversations
-                 (session_id TEXT, timestamp DATETIME, user_input TEXT,
-                  ai_response TEXT, language TEXT)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS key_usage
-                 (key_name TEXT, timestamp DATETIME, endpoint TEXT, status TEXT)''')
+                 (session_id TEXT, timestamp DATETIME, user_input TEXT, ai_response TEXT, language TEXT)''')
     conn.commit()
     conn.close()
 
-
 init_db()
 
+# ========== SIMPLE AUDIO PREPROCESSING ==========
+def preprocess_audio(audio_bytes):
+    """Simple audio preprocessing without pydub"""
+    try:
+        print(f"🎵 Processing audio: {len(audio_bytes)} bytes")
+        return audio_bytes, "audio/webm"
+    except Exception as e:
+        print(f"❌ Audio processing error: {e}")
+        return audio_bytes, "audio/webm"
 
-# ========== HELPER FUNCTIONS ==========
-def get_random_key():
-    if not gemini_clients:
-        return None
-    return random.choice(list(gemini_clients.keys()))
+# ========== GEMINI SPEECH-TO-TEXT (Uses GEMINI_STT) ==========
+def transcribe_with_gemini(audio_bytes, mime_type="audio/webm"):
+    """Transcribe speech to text using Gemini 2.5 Flash (STT key)"""
+    if not GEMINI_STT_KEY or not client_stt:
+        return "Speech-to-text service is not configured.", "en"
+    
+    try:
+        print(f"🎤 Transcribing with Gemini STT ({len(audio_bytes)} bytes, {mime_type})...")
+        
+        prompt = """Listen to this audio and transcribe the speech to text.
+Detect the language and return ONLY a valid JSON response:
+{"text": "transcribed text", "language": "en", "confidence": 0.95}
 
+Language codes: en, es, fr, ar, zh, ja, ko, ru, de, it, pt, hi
+If you cannot understand, return: {"text": "", "language": "unknown", "confidence": 0.0}"""
+        
+        response = client_stt.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=[
+                prompt,
+                types.Part.from_bytes(
+                    data=audio_bytes,
+                    mime_type=mime_type,
+                )
+            ],
+            config=types.GenerateContentConfig(
+                temperature=0.1,
+                max_output_tokens=2048,
+                safety_settings=[
+                    types.SafetySetting(
+                        category="HARM_CATEGORY_HARASSMENT",
+                        threshold="BLOCK_NONE"
+                    ),
+                    types.SafetySetting(
+                        category="HARM_CATEGORY_HATE_SPEECH",
+                        threshold="BLOCK_NONE"
+                    ),
+                    types.SafetySetting(
+                        category="HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                        threshold="BLOCK_NONE"
+                    ),
+                    types.SafetySetting(
+                        category="HARM_CATEGORY_DANGEROUS_CONTENT",
+                        threshold="BLOCK_NONE"
+                    ),
+                ]
+            )
+        )
+        
+        # Check if response is empty
+        if not response or not hasattr(response, 'candidates') or not response.candidates:
+            print(f"⚠️ Empty response from Gemini STT")
+            return "Could not transcribe audio. Please try again.", "en"
+        
+        # Try to get text from response
+        result_text = None
+        if hasattr(response, 'text') and response.text:
+            result_text = response.text.strip()
+        elif response.candidates and len(response.candidates) > 0:
+            candidate = response.candidates[0]
+            if hasattr(candidate, 'content') and candidate.content:
+                if hasattr(candidate.content, 'parts') and candidate.content.parts:
+                    result_text = candidate.content.parts[0].text.strip()
+        
+        if not result_text:
+            print(f"⚠️ No text in transcription response")
+            return "Could not transcribe audio. Please try again.", "en"
+        
+        print(f"📝 Gemini STT response: {result_text}")
+        
+        # Clean markdown code blocks
+        if "json" in result_text.lower() and '`' in result_text:
+            result_text = result_text.replace('```json', '').replace('```', '').strip()
+        
+        # Parse JSON
+        try:
+            result = json.loads(result_text)
+            text = result.get("text", "").strip()
+            language = result.get("language", "unknown")
+            confidence = result.get("confidence", 0)
+            
+            if confidence > 0.1 and text:
+                print(f"✅ Transcribed ({language}, confidence: {confidence}): {text}")
+                if language == "unknown" and text:
+                    language = detect_language_from_text(text)
+                return text, language
+            else:
+                return "Could you please repeat that more clearly?", "en"
+                
+        except json.JSONDecodeError as e:
+            print(f"⚠️ JSON parsing failed: {e}")
+            print(f"⚠️ Result text: {result_text}")
+            
+            # Try regex extraction
+            import re
+            text_match = re.search(r'"text"\s*:\s*"([^"]+)"', result_text)
+            lang_match = re.search(r'"language"\s*:\s*"([^"]+)"', result_text)
+            
+            if text_match:
+                text = text_match.group(1)
+                language = lang_match.group(1) if lang_match else detect_language_from_text(text)
+                print(f"✅ Extracted via regex: {text} ({language})")
+                return text, language
+            
+            # Last resort
+            return "Could not understand the audio. Please try again.", "en"
+            
+    except Exception as e:
+        print(f"❌ Gemini STT error: {e}")
+        import traceback
+        traceback.print_exc()
+        return "Error processing audio. Please try again.", "en"
 
+# ========== LANGUAGE DETECTION ==========
 def detect_language_from_text(text):
+    """Improved language detection from text"""
     if not text or not text.strip():
         return 'en'
-
+    
     text_lower = text.lower().strip()
-
+    
+    # Check for Arabic characters
     arabic_chars = set('ابتثجحخدذرزسشصضطظعغفقكلمنهوي')
     if any(char in arabic_chars for char in text):
         return 'ar'
-
+    
+    # Check for Chinese characters
     if any('\u4e00' <= c <= '\u9fff' for c in text):
         return 'zh'
-
-    if any('\u3040' <= c <= '\u309f' for c in text) or any('\u30a0' <= c <= '\u30ff' for c in text):
+    
+    # Check for Japanese
+    if any('\u3040' <= c <= '\u309f' for c in text):
         return 'ja'
-
+    if any('\u30a0' <= c <= '\u30ff' for c in text):
+        return 'ja'
+    
+    # Check for Korean
     if any('\uac00' <= c <= '\ud7a3' for c in text):
         return 'ko'
-
+    
     language_keywords = {
-        'en': ['hello', 'hi', 'thank', 'please', 'how', 'what'],
+        'en': ['hello', 'hi', 'thank you', 'please', 'how are', 'what is'],
         'es': ['hola', 'gracias', 'por favor', 'cómo', 'qué'],
-        'fr': ['bonjour', 'merci', 's\'il', 'comment', 'quoi'],
+        'fr': ['bonjour', 'merci', 's\'il vous plaît', 'comment', 'quoi'],
         'de': ['hallo', 'danke', 'bitte', 'wie', 'was'],
+        'it': ['ciao', 'grazie', 'per favore', 'come', 'che'],
+        'pt': ['olá', 'obrigado', 'por favor', 'como', 'o que'],
+        'ru': ['привет', 'спасибо', 'пожалуйста', 'как', 'что'],
         'ar': ['مرحبا', 'شكرا', 'من فضلك', 'كيف', 'ما'],
+        'hi': ['नमस्ते', 'धन्यवाद', 'कृपया', 'कैसे', 'क्या'],
+        'ja': ['こんにちは', 'ありがとう', 'お願いします', 'どう', '何'],
+        'ko': ['안녕하세요', '감사합니다', '부탁합니다', '어떻게', '무엇'],
+        'zh': ['你好', '谢谢', '请', '怎么', '什么'],
     }
-
+    
     for lang, keywords in language_keywords.items():
         for keyword in keywords:
             if keyword in text_lower:
                 return lang
-
+    
     return 'en'
 
-
+# ========== CONVERSATION MEMORY ==========
 def save_conversation(session_id, user_input, ai_response, language='en'):
     try:
         conn = sqlite3.connect(DATABASE_FILE)
@@ -123,650 +248,173 @@ def save_conversation(session_id, user_input, ai_response, language='en'):
     except Exception as e:
         print(f"Database error: {e}")
 
-
-def get_conversation_history(session_id, limit=10):
+def get_conversation_history(session_id, limit=5):
     try:
         conn = sqlite3.connect(DATABASE_FILE)
         c = conn.cursor()
-        c.execute("SELECT user_input, ai_response FROM conversations "
-                  "WHERE session_id=? ORDER BY timestamp DESC LIMIT ?",
+        c.execute("SELECT user_input, ai_response, language FROM conversations WHERE session_id=? ORDER BY timestamp DESC LIMIT ?",
                   (session_id, limit))
         history = c.fetchall()
         conn.close()
-        return list(reversed(history))
+        return history
     except Exception as e:
         print(f"Database error: {e}")
         return []
 
-
-# ========== SYSTEM PROMPT BUILDERS ==========
-def build_system_prompt(user_details, offer_details, chat_history):
-    base_prompt = """
-You are an expert job interview coach for "Talleb 5edma" (طلب خدمة - Interview Preparation Service).
-CORE ROLE:
-- Help job seekers prepare for interviews
-- Provide targeted advice based on the job position
-- Give constructive feedback on responses
-- Build confidence and professionalism
-RESPONSE GUIDELINES:
-- Always respond in the language the user is using
-- Keep responses concise but thorough (2-4 sentences)
-- Be specific to their job opportunity
-- Reference their experience level
-- Remember all previous conversation context
-"""
-
-    if user_details:
-        user_context = f"""
-CANDIDATE PROFILE:
-Name: {user_details.get('name', 'Unknown')}
-Experience: {user_details.get('experience_level', 'Not specified')}
-Education: {user_details.get('education', 'Not specified')}
-Skills: {', '.join(user_details.get('skills', [])) if isinstance(user_details.get('skills'), list) else user_details.get('skills', 'Not specified')}
-Country: {user_details.get('country', 'Not specified')}
-Languages: {', '.join(user_details.get('languages', [])) if isinstance(user_details.get('languages'), list) else user_details.get('languages', 'Not specified')}
-"""
-        base_prompt += user_context
-
-    if offer_details:
-        offer_context = f"""
-JOB OPPORTUNITY:
-Position: {offer_details.get('position', 'Not specified')}
-Company: {offer_details.get('company', 'Not specified')}
-Requirements: {', '.join(offer_details.get('required_skills', [])) if isinstance(offer_details.get('required_skills'), list) else offer_details.get('required_skills', 'Not specified')}
-Salary: {offer_details.get('salary_range', 'Not specified')}
-Location: {offer_details.get('location', 'Not specified')}
-"""
-        base_prompt += offer_context
-
-    if chat_history:
-        base_prompt += f"""
-CONVERSATION HISTORY (Remember this context):
-"""
-        for user_msg, ai_msg in chat_history[-5:]:
-            base_prompt += f"User: {user_msg}\nCoach: {ai_msg}\n"
-
-    return base_prompt
-
-
-def build_employer_interview_prompt(user_details, offer_details, chat_history):
-    prompt = f"""
-You are a professional hiring manager conducting a MOCK INTERVIEW for "Talleb 5edma".
-CANDIDATE INFORMATION:
-Name: {user_details.get('name', 'Candidate')}
-Experience: {user_details.get('experience_level', 'Not specified')}
-Education: {user_details.get('education', 'Not specified')}
-Skills: {', '.join(user_details.get('skills', [])) if isinstance(user_details.get('skills'), list) else user_details.get('skills', 'Not specified')}
-Country: {user_details.get('country', 'Not specified')}
-JOB POSITION:
-Title: {offer_details.get('position', 'Not specified')}
-Company: {offer_details.get('company', 'Not specified')}
-Requirements: {', '.join(offer_details.get('required_skills', [])) if isinstance(offer_details.get('required_skills'), list) else offer_details.get('required_skills', 'Not specified')}
-INTERVIEW GUIDELINES:
-1. Start with greeting if first message
-2. Ask 1-2 relevant questions per turn
-3. Reference their specific experience
-4. Ask technical & behavioral questions
-5. React naturally to their answers
-6. Make it feel like a REAL interview
-7. Focus on assessing fit for THIS specific role
-IMPORTANT:
-- Be professional but approachable
-- Ask open-ended questions
-- Don't give away answers
-- Remember everything they said
-- React to previous answers
-"""
-    if chat_history:
-        prompt += """
-CONVERSATION HISTORY (Remember this context):
-"""
-        for user_msg, ai_msg in chat_history[-5:]:
-            prompt += f"Candidate: {user_msg}\nYou (Interviewer): {ai_msg}\n"
-
-    return prompt
-
-
-# ========== AI FUNCTIONS WITH QUOTA AWARENESS ==========
-def transcribe_with_gemini(audio_bytes, mime_type="audio/webm"):
-    if not gemini_clients:
-        return "Speech-to-text service not configured.", "en"
-
-    available_keys = list(gemini_clients.keys())
-    random.shuffle(available_keys)
-
-    for key_name in available_keys:
-        try:
-            client = gemini_clients[key_name]
-            print(f"🎤 Transcribing with {key_name.upper()}...")
-
-            prompt = """
-Listen to this audio and transcribe the speech to text.
-Detect the language and return ONLY a valid JSON response:
-{"text": "transcribed text", "language": "en", "confidence": 0.95}
-"""
-            response = client.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=[prompt, types.Part.from_bytes(data=audio_bytes, mime_type=mime_type)],
-                config=types.GenerateContentConfig(
-                    temperature=0.1,
-                    max_output_tokens=2048,
-                )
+# ========== AI RESPONSE (Uses GEMINI_API_KEY) ==========
+def get_ai_response(text, session_id="default", language='en'):
+    """Get response from Gemini 2.5 Flash (Conversation key)"""
+    if not GEMINI_API_KEY or not client_conversation:
+        return "AI service is not configured.", language
+    
+    history = get_conversation_history(session_id)
+    
+    context = ""
+    if history:
+        for user_msg, ai_msg, hist_lang in reversed(history):
+            context += f"User: {user_msg}\nAssistant: {ai_msg}\n"
+        context += "\n"
+    
+    language_prompts = {
+        'en': "Respond in English in 1-3 sentences.",
+        'es': "Responde en español en 1-3 frases.",
+        'fr': "Répondez en français en 1-3 phrases.",
+        'ar': "رد بالعربية في 1-3 جمل.",
+        'de': "Antworten Sie auf Deutsch in 1-3 Sätzen.",
+        'it': "Rispondi in italiano in 1-3 frasi.",
+        'ja': "日本語で1〜3文で答えてください。",
+        'ko': "한국어로 1~3문장으로 답하세요.",
+        'zh': "用中文回答1-3句话。",
+        'hi': "हिंदी में 1-3 वाक्यों में उत्तर दें।",
+        'ru': "Ответьте на русском в 1-3 предложениях.",
+        'pt': "Responda em português em 1-3 frases.",
+    }
+    
+    instruction = language_prompts.get(language, language_prompts['en'])
+    full_prompt = f"{context}User: {text}\n{instruction}"
+    
+    try:
+        print(f"📤 Sending to Gemini API: {full_prompt[:150]}...")
+        
+        response = client_conversation.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=full_prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.7,
+                max_output_tokens=2048,
+                safety_settings=[
+                    types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_NONE"),
+                    types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="BLOCK_NONE"),
+                    types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="BLOCK_NONE"),
+                    types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_NONE"),
+                ]
             )
+        )
+        
+        # Extract text with multiple fallbacks
+        ai_text = None
+        
+        if response and hasattr(response, 'text') and response.text:
+            ai_text = response.text.strip()
+        elif response and hasattr(response, 'candidates') and response.candidates:
+            candidate = response.candidates[0]
+            if hasattr(candidate, 'content') and candidate.content:
+                if hasattr(candidate.content, 'parts') and candidate.content.parts:
+                    if hasattr(candidate.content.parts[0], 'text'):
+                        ai_text = candidate.content.parts[0].text.strip()
+        
+        if ai_text:
+            print(f"✅ Gemini API response ({language}): {ai_text[:100]}...")
+        else:
+            print(f"⚠️ Empty response from Gemini API")
+            print(f"Response: {response}")
+            if hasattr(response, 'candidates'):
+                print(f"Candidates: {response.candidates}")
+            ai_text = "Sorry, I couldn't generate a response. Please try again."
+            
+    except Exception as e:
+        print(f"❌ Gemini API error: {e}")
+        import traceback
+        traceback.print_exc()
+        ai_text = "I'm having trouble connecting right now. Please try again."
+    
+    save_conversation(session_id, text, ai_text, language)
+    return ai_text, language
 
-            result_text = response.text.strip() if hasattr(response, 'text') else ""
-            if "json" in result_text.lower() and '`' in result_text:
-                result_text = result_text.replace('```json', '').replace('```', '').strip()
-
-            try:
-                result = json.loads(result_text)
-                text = result.get("text", "").strip()
-                language = result.get("language", "en")
-
-                if not text:
-                    return "Could not hear that clearly. Please repeat.", "en"
-
-                print(f"... ✅ Transcribed with {key_name.upper()}: {text}")
-                return text, language
-            except Exception:
-                return "Could not understand audio.", "en"
-
-        except Exception as e:
-            error_msg = str(e)
-            if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg or "quota" in error_msg.lower():
-                print(f"⚠️ {key_name.upper()} quota exceeded, trying next key...")
-                continue
-            else:
-                print(f"❌ {key_name.upper()} error: {e}")
-                continue
-
-    # FIX #1: If all keys failed - ALWAYS return tuple
-    return "Could not transcribe audio. All API keys exhausted.", "en"
-
-
-def get_ai_response(text, user_details, offer_details, chat_history, mode, language):
-    if not gemini_clients:
-        return "AI service not configured."
-
-    available_keys = list(gemini_clients.keys())
-    random.shuffle(available_keys)
-
-    for key_name in available_keys:
-        try:
-            client = gemini_clients[key_name]
-
-            if mode == 'employer_interview':
-                system_prompt = build_employer_interview_prompt(user_details, offer_details, chat_history)
-            else:
-                system_prompt = build_system_prompt(user_details, offer_details, chat_history)
-
-            full_prompt = f"{system_prompt}\n\n--- CURRENT MESSAGE ---\n{text}"
-
-            print(f"📤 Trying {key_name.upper()}...")
-            response = client.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=full_prompt,
-                config=types.GenerateContentConfig(
-                    temperature=0.7,
-                    max_output_tokens=2048,
-                )
-            )
-
-            ai_text = response.text.strip() if hasattr(response, 'text') else ""
-            if ai_text:
-                print(f"✅ Response from {key_name.upper()}: {ai_text[:80]}...")
-                return ai_text
-            else:
-                return "Sorry, I couldn't generate a response."
-
-        except Exception as e:
-            error_msg = str(e)
-            if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg or "quota" in error_msg.lower():
-                print(f"⚠️ {key_name.upper()} quota exceeded, trying next key...")
-                continue
-            else:
-                print(f"❌ {key_name.upper()} error: {e}")
-                continue
-
-    return "❌ All API keys have hit their quota. Please try again in a few hours or upgrade to a paid plan."
-
-
+# ========== TEXT-TO-SPEECH ==========
 def text_to_speech(text, language='en'):
+    """Convert text to speech using gTTS"""
     try:
         tts_lang = LANGUAGE_MAPPING.get(language, 'en')
         tts = gTTS(text=text, lang=tts_lang, slow=False)
+        
         audio_buffer = io.BytesIO()
         tts.write_to_fp(audio_buffer)
         audio_buffer.seek(0)
         audio_bytes = audio_buffer.read()
-        print(f"✅ Generated TTS: {len(audio_bytes)} bytes")
+        
+        print(f"✅ Generated TTS audio ({tts_lang}): {len(audio_bytes)} bytes")
         return audio_bytes
     except Exception as e:
         print(f"❌ TTS error: {e}")
-        return None
+        if language != 'en':
+            try:
+                tts = gTTS(text=text, lang='en', slow=False)
+                audio_buffer = io.BytesIO()
+                tts.write_to_fp(audio_buffer)
+                audio_buffer.seek(0)
+                return audio_buffer.read()
+            except:
+                return b''
+        return b''
 
+# ========== API ENDPOINTS ==========
+@app.route('/health', methods=['GET'])
+def health():
+    """Health check endpoint"""
+    return jsonify({
+        "status": "active",
+        "stt_configured": bool(GEMINI_STT_KEY),
+        "api_configured": bool(GEMINI_API_KEY),
+        "gemini_api": "gemini-2.5-flash",
+        "multilingual": True,
+        "supported_languages": list(LANGUAGE_MAPPING.keys()),
+        "audio_support": True,
+        "speech_recognition": "Gemini-native (STT)",
+        "conversation_engine": "Gemini-native (API)",
+        "python_version": f"{os.sys.version_info.major}.{os.sys.version_info.minor}.{os.sys.version_info.micro}",
+        "timestamp": datetime.now().isoformat()
+    })
 
-# ========== ROUTES ==========
-
-HTML_TEMPLATE = """
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Talleb 5edma - Interview Coach</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: #f5f5f5;
-            padding: 20px;
-        }
-        
-        .container {
-            max-width: 900px;
-            margin: 0 auto;
-            background: white;
-            border-radius: 12px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-            padding: 30px;
-        }
-        
-        h1 {
-            color: #2c3e50;
-            margin-bottom: 10px;
-        }
-        
-        .subtitle {
-            color: #7f8c8d;
-            margin-bottom: 30px;
-            font-size: 14px;
-        }
-        
-        .mode-selector {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 15px;
-            margin-bottom: 30px;
-        }
-        
-        .mode-btn {
-            padding: 12px 20px;
-            border: 2px solid #ecf0f1;
-            background: white;
-            border-radius: 8px;
-            cursor: pointer;
-            font-weight: 500;
-            transition: all 0.3s;
-        }
-        
-        .mode-btn.active {
-            border-color: #3498db;
-            background: #3498db;
-            color: white;
-        }
-        
-        .section {
-            margin-bottom: 20px;
-        }
-        
-        label {
-            display: block;
-            margin-bottom: 8px;
-            color: #2c3e50;
-            font-weight: 500;
-        }
-        
-        input, textarea {
-            width: 100%;
-            padding: 10px;
-            border: 1px solid #ecf0f1;
-            border-radius: 6px;
-            font-family: inherit;
-            font-size: 14px;
-        }
-        
-        textarea {
-            resize: vertical;
-            min-height: 80px;
-        }
-        
-        .chat-area {
-            background: #f9f9f9;
-            border-radius: 8px;
-            padding: 15px;
-            min-height: 300px;
-            max-height: 400px;
-            overflow-y: auto;
-            margin-bottom: 15px;
-        }
-        
-        .message {
-            margin-bottom: 12px;
-            padding: 10px;
-            border-radius: 6px;
-        }
-        
-        .user-msg {
-            background: #e3f2fd;
-            text-align: right;
-            color: #1565c0;
-        }
-        
-        .ai-msg {
-            background: #f3e5f5;
-            color: #6a1b9a;
-        }
-        
-        .btn {
-            background: #3498db;
-            color: white;
-            border: none;
-            padding: 12px 20px;
-            border-radius: 6px;
-            cursor: pointer;
-            font-weight: 500;
-            transition: background 0.3s;
-        }
-        
-        .btn:hover {
-            background: #2980b9;
-        }
-        
-        .btn-group {
-            display: grid;
-            grid-template-columns: 1fr 1fr 1fr;
-            gap: 10px;
-        }
-        
-        .status {
-            padding: 12px;
-            border-radius: 6px;
-            margin-bottom: 15px;
-            text-align: center;
-        }
-        
-        .status.success {
-            background: #d4edda;
-            color: #155724;
-        }
-        
-        .status.error {
-            background: #f8d7da;
-            color: #721c24;
-        }
-        
-        .status.info {
-            background: #d1ecf1;
-            color: #0c5460;
-        }
-        
-        audio {
-            width: 100%;
-            margin: 10px 0;
-        }
-        
-        .hidden { display: none; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>🎤 Talleb 5edma - Interview Coach</h1>
-        <p class="subtitle">Practice interviews with AI - Voice & Text Supported</p>
-        
-        <div class="mode-selector">
-            <button class="mode-btn active" onclick="setMode('coach')">👨‍🏫 Coach Mode</button>
-            <button class="mode-btn" onclick="setMode('employer_interview')">💼 Mock Interview</button>
-        </div>
-        
-        <div class="section">
-            <label>Your Name</label>
-            <input type="text" id="userName" placeholder="Enter your name">
-        </div>
-        
-        <div class="section">
-            <label>Experience Level</label>
-            <input type="text" id="experience" placeholder="e.g., 5 years in web development">
-        </div>
-        
-        <div class="section">
-            <label>Target Position</label>
-            <input type="text" id="position" placeholder="e.g., Senior Developer">
-        </div>
-        
-        <div class="section">
-            <label>Company (Optional)</label>
-            <input type="text" id="company" placeholder="Target company">
-        </div>
-        
-        <div id="statusMsg"></div>
-        
-        <div class="chat-area" id="chatArea"></div>
-        
-        <div id="audioResponse" class="hidden">
-            <label>AI Response (Audio):</label>
-            <audio controls id="audioPlayer"></audio>
-        </div>
-        
-        <div class="btn-group">
-            <button class="btn" onclick="startVoiceInput()">🎙️ Start Recording</button>
-            <button class="btn" onclick="stopVoiceInput()">⏹️ Stop Recording</button>
-            <button class="btn" onclick="clearChat()">🗑️ Clear Chat</button>
-        </div>
-        
-        <div class="section" style="margin-top: 20px;">
-            <label>Or Type Your Message</label>
-            <textarea id="userMessage" placeholder="Type your response here..."></textarea>
-            <button class="btn" style="width: 100%; margin-top: 10px;" onclick="sendTextMessage()">Send Message</button>
-        </div>
-    </div>
-
-    <script>
-        let mediaRecorder;
-        let audioChunks = [];
-        let currentMode = 'coach';
-        let sessionId = 'session_' + Date.now();
-
-        function setMode(mode) {
-            currentMode = mode;
-            document.querySelectorAll('.mode-btn').forEach(btn => btn.classList.remove('active'));
-            event.target.classList.add('active');
-            clearChat();
-        }
-
-        async function startVoiceInput() {
-            try {
-                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                mediaRecorder = new MediaRecorder(stream);
-                audioChunks = [];
-                
-                mediaRecorder.ondataavailable = (event) => {
-                    audioChunks.push(event.data);
-                };
-                
-                mediaRecorder.onstop = async () => {
-                    const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
-                    await sendVoiceMessage(audioBlob);
-                };
-                
-                mediaRecorder.start();
-                showStatus('🎙️ Recording... Click Stop to send', 'info');
-            } catch (error) {
-                showStatus('❌ Microphone access denied', 'error');
-            }
-        }
-
-        function stopVoiceInput() {
-            if (mediaRecorder) {
-                mediaRecorder.stop();
-                showStatus('⏳ Processing audio...', 'info');
-            }
-        }
-
-        async function sendVoiceMessage(audioBlob) {
-            try {
-                const reader = new FileReader();
-                reader.onload = async (event) => {
-                    const base64Audio = event.target.result.split(',')[1];
-                    
-                    const response = await fetch('/api/voice-chat', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            audio: base64Audio,
-                            session_id: sessionId,
-                            mode: currentMode,
-                            user_details: {
-                                name: document.getElementById('userName').value || 'User',
-                                experience_level: document.getElementById('experience').value || 'Not specified',
-                                skills: []
-                            },
-                            offer_details: {
-                                position: document.getElementById('position').value || 'Not specified',
-                                company: document.getElementById('company').value || 'Not specified',
-                                required_skills: []
-                            }
-                        })
-                    });
-                    
-                    const data = await response.json();
-                    
-                    if (data.success) {
-                        addMessage('You', data.user_text);
-                        addMessage('AI Coach', data.ai_response);
-                        
-                        if (data.audio) {
-                            const audioData = 'data:audio/mp3;base64,' + data.audio;
-                            document.getElementById('audioPlayer').src = audioData;
-                            document.getElementById('audioResponse').classList.remove('hidden');
-                        }
-                        
-                        showStatus('✅ Received response!', 'success');
-                    } else {
-                        showStatus('❌ ' + data.error, 'error');
-                    }
-                };
-                reader.readAsDataURL(audioBlob);
-            } catch (error) {
-                showStatus('❌ Error: ' + error.message, 'error');
-            }
-        }
-
-        async function sendTextMessage() {
-            const message = document.getElementById('userMessage').value.trim();
-            if (!message) {
-                showStatus('⚠️ Please type a message', 'error');
-                return;
-            }
-
-            try {
-                const response = await fetch('/api/text-chat', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        text: message,
-                        session_id: sessionId,
-                        mode: currentMode,
-                        user_details: {
-                            name: document.getElementById('userName').value || 'User',
-                            experience_level: document.getElementById('experience').value || 'Not specified',
-                            skills: []
-                        },
-                        offer_details: {
-                            position: document.getElementById('position').value || 'Not specified',
-                            company: document.getElementById('company').value || 'Not specified',
-                            required_skills: []
-                        }
-                    })
-                });
-
-                const data = await response.json();
-                
-                if (data.success) {
-                    addMessage('You', message);
-                    addMessage('AI Coach', data.ai_response);
-                    document.getElementById('userMessage').value = '';
-                    showStatus('✅ Response received!', 'success');
-                } else {
-                    showStatus('❌ ' + data.error, 'error');
-                }
-            } catch (error) {
-                showStatus('❌ Error: ' + error.message, 'error');
-            }
-        }
-
-        function addMessage(sender, text) {
-            const chatArea = document.getElementById('chatArea');
-            const msgDiv = document.createElement('div');
-            msgDiv.className = 'message ' + (sender === 'You' ? 'user-msg' : 'ai-msg');
-            msgDiv.innerHTML = '<strong>' + sender + ':</strong> ' + text;
-            chatArea.appendChild(msgDiv);
-            chatArea.scrollTop = chatArea.scrollHeight;
-        }
-
-        function showStatus(message, type) {
-            const statusDiv = document.getElementById('statusMsg');
-            statusDiv.className = 'status ' + type;
-            statusDiv.textContent = message;
-        }
-
-        function clearChat() {
-            document.getElementById('chatArea').innerHTML = '';
-            document.getElementById('statusMsg').innerHTML = '';
-            document.getElementById('audioResponse').classList.add('hidden');
-            fetch('/api/clear-history', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ session_id: sessionId })
-            });
-        }
-
-        // Initialize
-        showStatus('✅ Ready! Choose a mode and start practicing', 'info');
-    </script>
-</body>
-</html>
-"""
-
-
-@app.route("/")
-def index():
-    return render_template_string(HTML_TEMPLATE)
-
-
-@app.route("/api/voice-chat", methods=["POST"])
+@app.route('/api/voice-chat', methods=['POST'])
 def voice_chat():
+    """Main endpoint - process voice to voice using Gemini"""
     try:
         data = request.json
         if not data:
             return jsonify({"success": False, "error": "No JSON data received"}), 400
-
-        audio_base64 = data.get("audio")
-        session_id = data.get("session_id", "default_session")
-        user_details = data.get("user_details", {}) or {}
-        offer_details = data.get("offer_details", {}) or {}
-        mode = data.get("mode", "coach")
-        language_hint = data.get("language_hint", "auto")
-
+        
+        audio_base64 = data.get('audio')
+        session_id = data.get('session_id', 'default_session')
+        language_hint = data.get('language_hint', 'auto')
+        
         if not audio_base64:
             return jsonify({"success": False, "error": "No audio data provided"}), 400
-
+        
         print(f"📥 Received audio: {len(audio_base64)} chars base64")
-
+        
         try:
             audio_bytes = base64.b64decode(audio_base64)
             print(f"✅ Decoded audio: {len(audio_bytes)} bytes")
         except Exception as e:
             return jsonify({"success": False, "error": f"Invalid base64 audio: {str(e)}"}), 400
-
+        
         print("🎵 Preprocessing audio...")
-        processed_audio, mime_type = audio_bytes, "audio/webm"
-
+        processed_audio, mime_type = preprocess_audio(audio_bytes)
+        
         print("🎤 Step 1: Transcribing with Gemini STT...")
         user_text, detected_language = transcribe_with_gemini(processed_audio, mime_type)
-
-        # FIX #2: Validate STT response
+        
         if not user_text or len(user_text.strip()) < 2:
             return jsonify({
                 "success": False,
@@ -774,30 +422,18 @@ def voice_chat():
                 "user_text": user_text,
                 "detected_language": detected_language
             }), 400
-
-        if language_hint != "auto":
+        
+        if language_hint != 'auto' and language_hint in LANGUAGE_MAPPING:
             detected_language = language_hint
-
+        
         print(f"🌐 Detected language: {detected_language}")
-
-        chat_history = get_conversation_history(session_id)
+        
         print(f"🤖 Step 2: Getting AI response in {detected_language}...")
-
-        ai_response = get_ai_response(
-            user_text,
-            user_details=user_details,
-            offer_details=offer_details,
-            chat_history=chat_history,
-            mode=mode,
-            language=detected_language,
-        )
-
-        save_conversation(session_id, user_text, ai_response, detected_language)
-
-        print(f"🔊 Step 3: Generating speech in {detected_language}...")
-        audio_response = text_to_speech(ai_response, detected_language)
-
-        # FIX #3: Validate TTS response
+        ai_response, response_language = get_ai_response(user_text, session_id, detected_language)
+        
+        print(f"🔊 Step 3: Generating speech in {response_language}...")
+        audio_response = text_to_speech(ai_response, response_language)
+        
         if not audio_response or len(audio_response) < 100:
             return jsonify({
                 "success": False,
@@ -806,108 +442,516 @@ def voice_chat():
                 "ai_response": ai_response,
                 "detected_language": detected_language
             }), 500
-
-        audio_base64_response = base64.b64encode(audio_response).decode("utf-8")
-
+        
+        audio_base64_response = base64.b64encode(audio_response).decode('utf-8')
+        print(f"✅ Response audio: {len(audio_base64_response)} chars base64")
+        
         return jsonify({
             "success": True,
             "user_text": user_text,
             "ai_response": ai_response,
             "audio": audio_base64_response,
             "detected_language": detected_language,
+            "response_language": response_language,
             "session_id": session_id
         })
+        
     except Exception as e:
         print(f"❌ Voice chat error: {e}")
         import traceback
         traceback.print_exc()
-        return jsonify({"success": False, "error": str(e)}), 500
+        return jsonify({"success": False, "error": str(e), "message": "Internal server error"}), 500
 
-
-@app.route("/api/text-chat", methods=["POST"])
+@app.route('/api/text-chat', methods=['POST'])
 def text_chat():
+    """Text-only endpoint"""
     try:
         data = request.json
         if not data:
             return jsonify({"success": False, "error": "No JSON data received"}), 400
-
-        text = data.get("text")
-        session_id = data.get("session_id", "default_session")
-        user_details = data.get("user_details", {}) or {}
-        offer_details = data.get("offer_details", {}) or {}
-        mode = data.get("mode", "coach")
-        language_hint = data.get("language_hint", "auto")
-
+        
+        text = data.get('text')
+        session_id = data.get('session_id', 'default_session')
+        language_hint = data.get('language_hint', 'auto')
+        
         if not text:
             return jsonify({"success": False, "error": "No text provided"}), 400
-
+        
         print(f"💬 Text chat: {text}")
-
+        
         detected_language = detect_language_from_text(text)
-        if language_hint != "auto":
+        
+        if language_hint != 'auto' and language_hint in LANGUAGE_MAPPING:
             detected_language = language_hint
-
-        chat_history = get_conversation_history(session_id)
-
-        ai_response = get_ai_response(
-            text,
-            user_details=user_details,
-            offer_details=offer_details,
-            chat_history=chat_history,
-            mode=mode,
-            language=detected_language,
-        )
-
-        save_conversation(session_id, text, ai_response, detected_language)
-
+        
+        print(f"🌐 Language: {detected_language}")
+        
+        ai_response, response_language = get_ai_response(text, session_id, detected_language)
+        
+        print(f"✅ AI response ({response_language}): {ai_response[:100]}...")
+        
         return jsonify({
             "success": True,
             "ai_response": ai_response,
             "detected_language": detected_language,
+            "response_language": response_language,
             "session_id": session_id
         })
+        
     except Exception as e:
         print(f"❌ Text chat error: {e}")
         import traceback
         traceback.print_exc()
         return jsonify({"success": False, "error": str(e)}), 500
 
-
-@app.route("/api/clear-history", methods=["POST"])
+@app.route('/api/clear-history', methods=['POST'])
 def clear_history():
+    """Clear conversation history"""
     try:
-        data = request.json or {}
-        session_id = data.get("session_id", "default_session")
-
+        data = request.json
+        session_id = data.get('session_id', 'default_session')
+        
         conn = sqlite3.connect(DATABASE_FILE)
         c = conn.cursor()
         c.execute("DELETE FROM conversations WHERE session_id=?", (session_id,))
         deleted = c.rowcount
         conn.commit()
         conn.close()
-
-        print(f"🗑️ Cleared {deleted} messages for session {session_id}")
+        
+        print(f"🗑️ Cleared {deleted} messages")
+        
         return jsonify({
             "success": True,
             "message": f"Cleared {deleted} messages",
             "session_id": session_id
         })
+        
     except Exception as e:
         print(f"❌ Clear history error: {e}")
-        import traceback
-        traceback.print_exc()
         return jsonify({"success": False, "error": str(e)}), 500
 
+@app.route('/')
+def index():
+    """Homepage with embedded UI"""
+    stt_status = "✅ Configured" if GEMINI_STT_KEY else "❌ Not Configured"
+    api_status = "✅ Configured" if GEMINI_API_KEY else "❌ Not Configured"
+    return f"""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🎙️ Gemini Voice AI Chatbot</title>
+    <style>
+        * {{
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }}
+        body {{
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+            color: #333;
+        }}
+        .container {{
+            max-width: 1000px;
+            margin: 0 auto;
+        }}
+        .header {{
+            background: white;
+            padding: 30px;
+            border-radius: 15px;
+            margin-bottom: 20px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+        }}
+        .header h1 {{
+            margin-bottom: 10px;
+            color: #333;
+        }}
+        .header p {{
+            color: #666;
+            font-size: 16px;
+        }}
+        .status-box {{
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin-top: 20px;
+        }}
+        .status {{
+            padding: 15px;
+            border-radius: 10px;
+            font-size: 14px;
+            line-height: 1.6;
+        }}
+        .status.success {{
+            background: #e8f5e9;
+            border-left: 4px solid #4caf50;
+        }}
+        .status.warning {{
+            background: #fff3cd;
+            border-left: 4px solid #ffc107;
+        }}
+        .main-content {{
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }}
+        .card {{
+            background: white;
+            padding: 25px;
+            border-radius: 15px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+        }}
+        .card h2 {{
+            margin-bottom: 20px;
+            color: #333;
+            font-size: 20px;
+        }}
+        .input-group {{
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }}
+        textarea, input {{
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-family: inherit;
+            font-size: 14px;
+            resize: vertical;
+        }}
+        textarea:focus, input:focus {{
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }}
+        .button-group {{
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }}
+        button {{
+            flex: 1;
+            padding: 12px 20px;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            min-width: 140px;
+        }}
+        .btn-primary {{
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }}
+        .btn-primary:hover {{
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }}
+        .btn-primary:active {{
+            transform: translateY(0);
+        }}
+        .btn-secondary {{
+            background: #f0f0f0;
+            color: #333;
+        }}
+        .btn-secondary:hover {{
+            background: #e0e0e0;
+        }}
+        .btn-danger {{
+            background: #ff6b6b;
+            color: white;
+        }}
+        .btn-danger:hover {{
+            background: #ff5252;
+        }}
+        .output {{
+            margin-top: 15px;
+            padding: 15px;
+            background: #f5f5f5;
+            border-radius: 8px;
+            min-height: 60px;
+            border-left: 4px solid #667eea;
+        }}
+        .output.hidden {{
+            display: none;
+        }}
+        .output-label {{
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 8px;
+        }}
+        .output-text {{
+            color: #666;
+            word-wrap: break-word;
+        }}
+        .loading {{
+            color: #667eea;
+            font-style: italic;
+        }}
+        .error {{
+            color: #d32f2f;
+        }}
+        .success {{
+            color: #388e3c;
+        }}
+        audio {{
+            width: 100%;
+            margin-top: 10px;
+        }}
+        #recordingStatus {{
+            display: inline-block;
+            padding: 8px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+            margin-top: 10px;
+        }}
+        #recordingStatus.recording {{
+            background: #ffebee;
+            color: #d32f2f;
+        }}
+        #recordingStatus.ready {{
+            background: #e8f5e9;
+            color: #388e3c;
+        }}
+        @media (max-width: 768px) {{
+            .main-content {{
+                grid-template-columns: 1fr;
+            }}
+            .status-box {{
+                grid-template-columns: 1fr;
+            }}
+        }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🎙️ Gemini Voice AI Chatbot</h1>
+            <p>Real-time multilingual voice and text chat powered by Gemini 2.5 Flash</p>
+            <div class="status-box">
+                <div class="status success">
+                    <strong>Speech-to-Text (GEMINI_STT):</strong> {stt_status}<br>
+                    <strong>Conversation (GEMINI_API_KEY):</strong> {api_status}<br>
+                    <strong>Languages:</strong> 14 supported
+                </div>
+                <div class="status" id="connectionStatus">
+                    <strong>Testing connection...</strong>
+                </div>
+            </div>
+        </div>
 
-@app.route("/api/health", methods=["GET"])
-def health():
-    return jsonify({
-        "status": "active",
-        "keys_configured": len(gemini_clients),
-        "supported_languages": list(LANGUAGE_MAPPING.keys()),
-        "timestamp": datetime.now().isoformat()
-    })
+        <div class="main-content">
+            <div class="card">
+                <h2>🎤 Voice Chat</h2>
+                <div class="input-group">
+                    <label>Click to record (auto-detect language):</label>
+                    <button class="btn-primary" id="recordBtn" onclick="startRecording()">🎤 Start Recording</button>
+                    <div id="recordingStatus" class="hidden"></div>
+                    <div id="transcriptOutput" class="output hidden">
+                        <div class="output-label">Transcribed Text:</div>
+                        <div class="output-text" id="transcriptText"></div>
+                    </div>
+                    <div id="voiceResponseOutput" class="output hidden">
+                        <div class="output-label">AI Response:</div>
+                        <div class="output-text" id="voiceResponseText"></div>
+                        <audio id="responseAudio" controls></audio>
+                    </div>
+                </div>
+            </div>
 
+            <div class="card">
+                <h2>💬 Text Chat</h2>
+                <div class="input-group">
+                    <textarea id="userText" placeholder="Type your message here..." rows="4"></textarea>
+                    <button class="btn-primary" onclick="sendText()">Send Message</button>
+                    <div id="textResponseOutput" class="output hidden">
+                        <div class="output-label">AI Response:</div>
+                        <div class="output-text" id="textResponseText"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
 
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)), debug=True)
+        <div class="card" style="margin-top: 20px;">
+            <h2>⚙️ Settings</h2>
+            <div class="button-group">
+                <button class="btn-secondary" onclick="testHealth()">🔗 Test Connection</button>
+                <button class="btn-secondary" onclick="clearHistory()">🗑️ Clear History</button>
+                <button class="btn-danger" onclick="location.reload()">🔄 Reload Page</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let mediaRecorder;
+        let audioChunks = [];
+        let isRecording = false;
+        let sessionId = Math.random().toString(36).substr(2, 9);
+
+        // Test connection on load
+        window.addEventListener('load', testHealth);
+
+        async function testHealth() {{
+            try {{
+                const response = await fetch('/health');
+                const data = await response.json();
+                const statusEl = document.getElementById('connectionStatus');
+                const sttStatus = data.stt_configured ? '✅' : '❌';
+                const apiStatus = data.api_configured ? '✅' : '❌';
+                statusEl.innerHTML = `
+                    <strong>✅ Backend Connected</strong><br>
+                    STT Key: ${{sttStatus}}<br>
+                    API Key: ${{apiStatus}}<br>
+                    Languages: ${{data.supported_languages.length}}
+                `;
+                statusEl.className = 'status success';
+            }} catch (error) {{
+                const statusEl = document.getElementById('connectionStatus');
+                statusEl.innerHTML = `<strong>❌ Connection Failed</strong><br>${{error.message}}`;
+                statusEl.className = 'status warning';
+            }}
+        }}
+
+        async function startRecording() {{
+            if (!isRecording) {{
+                const stream = await navigator.mediaDevices.getUserMedia({{ audio: true }});
+                mediaRecorder = new MediaRecorder(stream);
+                audioChunks = [];
+
+                mediaRecorder.ondataavailable = (event) => {{
+                    audioChunks.push(event.data);
+                }};
+
+                mediaRecorder.onstop = sendAudio;
+
+                mediaRecorder.start();
+                isRecording = true;
+
+                const recordBtn = document.getElementById('recordBtn');
+                recordBtn.textContent = '⏹️ Stop Recording';
+                recordBtn.style.background = '#ff6b6b';
+
+                const statusEl = document.getElementById('recordingStatus');
+                statusEl.textContent = '🔴 Recording...';
+                statusEl.className = 'recording';
+                statusEl.classList.remove('hidden');
+            }} else {{
+                mediaRecorder.stop();
+                isRecording = false;
+
+                const recordBtn = document.getElementById('recordBtn');
+                recordBtn.textContent = '🎤 Start Recording';
+                recordBtn.style.background = '';
+
+                const statusEl = document.getElementById('recordingStatus');
+                statusEl.textContent = '⏳ Processing...';
+                statusEl.className = '';
+            }}
+        }}
+
+        async function sendAudio() {{
+            const audioBlob = new Blob(audioChunks, {{ type: 'audio/webm' }});
+            const reader = new FileReader();
+
+            reader.onload = async () => {{
+                const audioBase64 = reader.result.split(',')[1];
+
+                try {{
+                    const response = await fetch('/api/voice-chat', {{
+                        method: 'POST',
+                        headers: {{ 'Content-Type': 'application/json' }},
+                        body: JSON.stringify({{
+                            audio: audioBase64,
+                            session_id: sessionId
+                        }})
+                    }});
+
+                    const data = await response.json();
+
+                    if (data.success) {{
+                        document.getElementById('transcriptText').textContent = data.user_text;
+                        document.getElementById('transcriptOutput').classList.remove('hidden');
+
+                        document.getElementById('voiceResponseText').textContent = data.ai_response;
+                        document.getElementById('responseAudio').src = 'data:audio/mp3;base64,' + data.audio;
+                        document.getElementById('voiceResponseOutput').classList.remove('hidden');
+                    }} else {{
+                        alert('Error: ' + data.error);
+                    }}
+                }} catch (error) {{
+                    alert('Network error: ' + error.message);
+                }} finally {{
+                    const statusEl = document.getElementById('recordingStatus');
+                    statusEl.classList.add('hidden');
+                }}
+            }};
+
+            reader.readAsDataURL(audioBlob);
+        }}
+
+        async function sendText() {{
+            const text = document.getElementById('userText').value.trim();
+            if (!text) {{
+                alert('Please enter some text');
+                return;
+            }}
+
+            try {{
+                const response = await fetch('/api/text-chat', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{
+                        text: text,
+                        session_id: sessionId
+                    }})
+                }});
+
+                const data = await response.json();
+
+                if (data.success) {{
+                    document.getElementById('textResponseText').textContent = data.ai_response;
+                    document.getElementById('textResponseOutput').classList.remove('hidden');
+                    document.getElementById('userText').value = '';
+                }} else {{
+                    alert('Error: ' + data.error);
+                }}
+            }} catch (error) {{
+                alert('Network error: ' + error.message);
+            }}
+        }}
+
+        async function clearHistory() {{
+            if (!confirm('Clear conversation history?')) return;
+
+            try {{
+                const response = await fetch('/api/clear-history', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ session_id: sessionId }})
+                }});
+
+                const data = await response.json();
+                alert(data.message);
+            }} catch (error) {{
+                alert('Error: ' + error.message);
+            }}
+        }}
+    </script>
+</body>
+</html>
+"""
+
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5000))
+    print(f"🚀 Starting Gemini Voice Chatbot on port {port}")
+    print(f"🎤 Using GEMINI_STT key for speech-to-text transcription")
+    print(f"💬 Using GEMINI_API_KEY for conversation responses")
+    print(f"🌍 Supports {len(LANGUAGE_MAPPING)} languages with auto-detection")
+    print(f"⚠️ Dual API keys for independent quota management")
+    app.run(host='0.0.0.0', port=port, debug=False)
