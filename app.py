@@ -829,7 +829,7 @@ def index():
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>🎙️ Talleb 5edma - Interview Coaching (Load Balanced)</title>
+    <title>🎙️ Talleb 5edma - Interview Coaching</title>
     <style>
         * {{ margin: 0; padding: 0; box-sizing: border-box; }}
         body {{
@@ -837,6 +837,7 @@ def index():
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             min-height: 100vh;
             padding: 20px;
+            color: #333;
         }}
         .container {{ max-width: 1200px; margin: 0 auto; }}
         .header {{
@@ -846,7 +847,8 @@ def index():
             margin-bottom: 20px;
             box-shadow: 0 10px 30px rgba(0,0,0,0.1);
         }}
-        .header h1 {{ margin-bottom: 10px; color: #333; }}
+        .header h1 {{ margin-bottom: 5px; color: #333; font-size: 28px; }}
+        .header p {{ color: #666; margin-bottom: 20px; }}
         .session-banner {{
             background: #e3f2fd;
             border-left: 4px solid #2196f3;
@@ -874,6 +876,37 @@ def index():
             background: #e8f5e9;
             border-left: 4px solid #4caf50;
         }}
+        .setup-section {{
+            background: white;
+            padding: 25px;
+            border-radius: 15px;
+            margin-bottom: 20px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+        }}
+        .setup-section h3 {{
+            color: #333;
+            margin-bottom: 15px;
+            font-size: 18px;
+        }}
+        .form-grid {{
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+            margin-bottom: 15px;
+        }}
+        input, textarea, select {{
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-family: inherit;
+            font-size: 14px;
+            background: white;
+        }}
+        input:focus, textarea:focus, select:focus {{
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }}
         .main-content {{
             display: grid;
             grid-template-columns: 1fr 1fr;
@@ -886,16 +919,7 @@ def index():
             box-shadow: 0 10px 30px rgba(0,0,0,0.1);
         }}
         .card h2 {{ margin-bottom: 20px; color: #333; font-size: 20px; }}
-        textarea {{
-            width: 100%;
-            padding: 12px;
-            border: 2px solid #e0e0e0;
-            border-radius: 8px;
-            font-family: inherit;
-            font-size: 14px;
-            resize: vertical;
-        }}
-        textarea:focus {{ outline: none; border-color: #667eea; }}
+        textarea.message {{ width: 100%; height: 120px; resize: vertical; }}
         button {{
             padding: 12px 20px;
             border: none;
@@ -907,9 +931,19 @@ def index():
             color: white;
             transition: all 0.3s ease;
             margin-top: 10px;
+            margin-right: 10px;
         }}
-        button:hover {{ transform: translateY(-2px); box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4); }}
-        button.secondary {{ background: #f0f0f0; color: #333; }}
+        button:hover {{
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }}
+        button.secondary {{
+            background: #f0f0f0;
+            color: #333;
+        }}
+        button.secondary:hover {{
+            background: #e0e0e0;
+        }}
         .output {{
             margin-top: 15px;
             padding: 15px;
@@ -917,10 +951,35 @@ def index():
             border-radius: 8px;
             min-height: 60px;
             border-left: 4px solid #667eea;
+            line-height: 1.6;
         }}
         .output.hidden {{ display: none; }}
         audio {{ width: 100%; margin-top: 10px; }}
+        .tabs {{
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            border-bottom: 2px solid #e0e0e0;
+        }}
+        .tab-btn {{
+            padding: 12px 20px;
+            background: transparent;
+            color: #666;
+            border: none;
+            border-bottom: 3px solid transparent;
+            cursor: pointer;
+            margin-top: 0;
+            font-weight: 600;
+            transition: all 0.3s;
+        }}
+        .tab-btn.active {{
+            color: #667eea;
+            border-bottom-color: #667eea;
+        }}
+        .tab-content {{ display: none; }}
+        .tab-content.active {{ display: block; }}
         @media (max-width: 768px) {{
+            .form-grid {{ grid-template-columns: 1fr; }}
             .main-content {{ grid-template-columns: 1fr; }}
             .status-box {{ grid-template-columns: 1fr; }}
         }}
@@ -928,6 +987,7 @@ def index():
 </head>
 <body>
     <div class="container">
+        <!-- Header -->
         <div class="header">
             <h1>🎙️ Talleb 5edma - Interview Coaching</h1>
             <p>Context-Aware AI Interview Coach with Multi-Key Load Balancing</p>
@@ -938,7 +998,7 @@ def index():
                     <span id="sessionText">New Conversation</span> | 
                     <span id="sessionId" style="font-family: monospace; font-size: 12px;"></span>
                 </div>
-                <button class="secondary" onclick="startNewSession()" style="margin: 0;">New Chat</button>
+                <button class="secondary" onclick="startNewSession()" style="margin: 0; margin-top: 0;">New Chat</button>
             </div>
             
             <div class="status-box">
@@ -953,31 +1013,65 @@ def index():
             </div>
         </div>
 
-        <div class="main-content">
+        <!-- Setup Section -->
+        <div class="setup-section">
+            <h3>👤 Your Profile & Job Details</h3>
+            <div class="form-grid">
+                <input type="text" id="userName" placeholder="Your Name" value="Ahmed">
+                <input type="text" id="experience" placeholder="Experience (e.g., 3 years)" value="3 years">
+                <input type="text" id="education" placeholder="Education" value="Bachelor in CS">
+                <input type="text" id="currentRole" placeholder="Current Role" value="Junior Developer">
+                <input type="text" id="position" placeholder="Position Applying For" value="Senior Software Engineer">
+                <input type="text" id="company" placeholder="Company" value="Tech Company XYZ">
+                <input type="text" id="industry" placeholder="Industry" value="Software Development">
+                <input type="text" id="requiredSkills" placeholder="Required Skills (comma separated)" 
+                       value="Python, JavaScript, AWS, System Design">
+            </div>
+            <button onclick="saveContext()" style="background: linear-gradient(135deg, #4caf50 0%, #45a049 100%);">💾 Save Context</button>
+            <div id="contextStatus"></div>
+        </div>
+
+        <!-- Chat Tabs -->
+        <div class="tabs">
+            <button class="tab-btn active" onclick="switchTab('voice')">🎤 Voice Chat</button>
+            <button class="tab-btn" onclick="switchTab('text')">💬 Text Chat</button>
+            <button class="tab-btn" onclick="switchTab('stats')">📊 Statistics</button>
+        </div>
+
+        <!-- Voice Chat Tab -->
+        <div id="voice" class="tab-content active">
             <div class="card">
                 <h2>🎤 Voice Chat</h2>
+                <p style="color: #666; margin-bottom: 15px;">Record your voice and get AI coaching response</p>
                 <button onclick="startRecording()" id="recordBtn">🎤 Start Recording</button>
+                <button class="secondary" id="stopBtn" style="display: none;" onclick="stopRecording()">⏹️ Stop Recording</button>
                 <div id="voiceResponseOutput" class="output hidden">
                     <div id="voiceResponseText"></div>
                     <audio id="responseAudio" controls></audio>
                 </div>
             </div>
+        </div>
 
+        <!-- Text Chat Tab -->
+        <div id="text" class="tab-content">
             <div class="card">
                 <h2>💬 Text Chat</h2>
-                <textarea id="userText" placeholder="Type your message..." rows="4"></textarea>
-                <button onclick="sendText()">Send Message</button>
+                <p style="color: #666; margin-bottom: 15px;">Type your questions and get instant feedback</p>
+                <textarea id="userText" class="message" placeholder="Type your message..."></textarea>
+                <button onclick="sendText()">📤 Send Message</button>
                 <div id="textResponseOutput" class="output hidden">
                     <div id="textResponseText"></div>
                 </div>
             </div>
         </div>
 
-        <div class="card" style="margin-top: 20px;">
-            <h2>📊 System Status</h2>
-            <button class="secondary" onclick="checkKeyUsage()">🔑 View Key Usage</button>
-            <button class="secondary" onclick="loadSessions()">📋 View Sessions</button>
-            <div id="statsOutput"></div>
+        <!-- Stats Tab -->
+        <div id="stats" class="tab-content">
+            <div class="card">
+                <h2>📊 System Statistics</h2>
+                <button class="secondary" onclick="checkKeyUsage()">🔑 View API Key Usage</button>
+                <div id="statsOutput" style="margin-top: 20px;"></div>
+            </div>
         </div>
     </div>
 
@@ -987,13 +1081,28 @@ def index():
         let isRecording = false;
         let sessionId = localStorage.getItem('sessionId') || Math.random().toString(36).substr(2, 9);
         let isNewSession = !localStorage.getItem('sessionId');
+        let userDetails = {{}};
+        let offerDetails = {{}};
 
+        // Initialize on page load
         window.addEventListener('load', () => {{
             localStorage.setItem('sessionId', sessionId);
             updateSessionDisplay();
             testHealth();
         }});
 
+        // Tab switching
+        function switchTab(tabName) {{
+            // Hide all tabs
+            document.querySelectorAll('.tab-content').forEach(tab => tab.classList.remove('active'));
+            document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+            
+            // Show selected tab
+            document.getElementById(tabName).classList.add('active');
+            event.target.classList.add('active');
+        }}
+
+        // Update session display
         function updateSessionDisplay() {{
             const banner = document.getElementById('sessionBanner');
             const icon = document.getElementById('sessionIcon');
@@ -1013,6 +1122,62 @@ def index():
             }}
         }}
 
+        // Save context
+        async function saveContext() {{
+            userDetails = {{
+                name: document.getElementById('userName').value,
+                experience_level: document.getElementById('experience').value,
+                education: document.getElementById('education').value,
+                languages: ['Arabic', 'English'],
+                country: 'Egypt',
+                current_role: document.getElementById('currentRole').value,
+                career_goal: 'Professional Growth'
+            }};
+            
+            offerDetails = {{
+                position: document.getElementById('position').value,
+                company: document.getElementById('company').value,
+                industry: document.getElementById('industry').value,
+                job_level: 'Senior',
+                required_skills: document.getElementById('requiredSkills').value.split(',').map(s => s.trim()),
+                preferred_qualifications: ['Leadership', 'Mentoring'],
+                responsibilities: ['Lead features', 'Code review', 'Mentor team'],
+                salary_range: 'Competitive',
+                benefits: ['Health', 'Remote', 'Development'],
+                company_size: '500+',
+                culture_values: ['Innovation', 'Collaboration']
+            }};
+            
+            try {{
+                const response = await fetch('/api/context/save', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{
+                        session_id: sessionId,
+                        user_details: userDetails,
+                        offer_details: offerDetails
+                    }})
+                }});
+                
+                const data = await response.json();
+                if (data.success) {{
+                    document.getElementById('contextStatus').innerHTML = 
+                        '✅ <strong>Context saved!</strong><br>' +
+                        '👤 ' + userDetails.name + ' | ' +
+                        '💼 ' + offerDetails.position + ' @ ' + offerDetails.company;
+                    document.getElementById('contextStatus').style.color = '#4caf50';
+                    document.getElementById('contextStatus').style.marginTop = '10px';
+                }} else {{
+                    document.getElementById('contextStatus').textContent = '❌ Error: ' + data.error;
+                    document.getElementById('contextStatus').style.color = '#f44336';
+                }}
+            }} catch (error) {{
+                document.getElementById('contextStatus').textContent = '❌ Error: ' + error.message;
+                document.getElementById('contextStatus').style.color = '#f44336';
+            }}
+        }}
+
+        // Start new session
         function startNewSession() {{
             if (!confirm('Start a new conversation?')) return;
             sessionId = Math.random().toString(36).substr(2, 9);
@@ -1021,6 +1186,7 @@ def index():
             location.reload();
         }}
 
+        // Test health
         async function testHealth() {{
             try {{
                 const response = await fetch('/health');
@@ -1028,14 +1194,16 @@ def index():
                 document.getElementById('connectionStatus').innerHTML = `
                     <strong>✅ Backend Connected</strong><br>
                     Active Keys: ${{data.total_keys}}<br>
-                    Total RPD: ${{data.total_rpd_capacity}}<br>
+                    Total RPD: ${{data.total_rpd_capacity}}/day<br>
                     Context Aware: Yes
                 `;
             }} catch (error) {{
-                document.getElementById('connectionStatus').innerHTML = '❌ Connection Failed<br>' + error.message;
+                document.getElementById('connectionStatus').innerHTML = 
+                    '<strong>❌ Connection Failed</strong><br>' + error.message;
             }}
         }}
 
+        // Voice recording
         async function startRecording() {{
             if (!isRecording) {{
                 try {{
@@ -1046,34 +1214,45 @@ def index():
                     mediaRecorder.onstop = sendAudio;
                     mediaRecorder.start();
                     isRecording = true;
-                    document.getElementById('recordBtn').textContent = '⏹️ Stop Recording';
+                    document.getElementById('recordBtn').style.display = 'none';
+                    document.getElementById('stopBtn').style.display = 'inline-block';
                 }} catch (error) {{
                     alert('Microphone error: ' + error.message);
                 }}
-            }} else {{
-                mediaRecorder.stop();
-                isRecording = false;
-                document.getElementById('recordBtn').textContent = '🎤 Start Recording';
             }}
         }}
 
+        function stopRecording() {{
+            if (mediaRecorder) {{
+                mediaRecorder.stop();
+                isRecording = false;
+                document.getElementById('stopBtn').style.display = 'none';
+                document.getElementById('recordBtn').style.display = 'inline-block';
+            }}
+        }}
+
+        // Send audio
         async function sendAudio() {{
             const blob = new Blob(audioChunks, {{ type: 'audio/webm' }});
             const reader = new FileReader();
             reader.onload = async () => {{
-                const base64 = reader.result.split(',')[1];
+                const base64 = reader.result.split(',');
                 try {{
                     const response = await fetch('/api/voice-chat', {{
                         method: 'POST',
                         headers: {{ 'Content-Type': 'application/json' }},
                         body: JSON.stringify({{
                             audio: base64,
-                            session_id: sessionId
+                            session_id: sessionId,
+                            user_details: userDetails,
+                            offer_details: offerDetails
                         }})
                     }});
                     const data = await response.json();
                     if (data.success) {{
-                        document.getElementById('voiceResponseText').textContent = data.ai_response;
+                        document.getElementById('voiceResponseText').innerHTML = 
+                            '<strong>🎤 Your audio:</strong> ' + data.user_text + '<br><br>' +
+                            '<strong>🤖 Coach response:</strong><br>' + data.ai_response;
                         document.getElementById('responseAudio').src = 'data:audio/mp3;base64,' + data.audio;
                         document.getElementById('voiceResponseOutput').classList.remove('hidden');
                         isNewSession = false;
@@ -1088,21 +1267,27 @@ def index():
             reader.readAsDataURL(blob);
         }}
 
+        // Send text
         async function sendText() {{
             const text = document.getElementById('userText').value.trim();
             if (!text) return alert('Enter text');
+            
             try {{
                 const response = await fetch('/api/text-chat', {{
                     method: 'POST',
                     headers: {{ 'Content-Type': 'application/json' }},
                     body: JSON.stringify({{
                         text: text,
-                        session_id: sessionId
+                        session_id: sessionId,
+                        user_details: userDetails,
+                        offer_details: offerDetails
                     }})
                 }});
                 const data = await response.json();
                 if (data.success) {{
-                    document.getElementById('textResponseText').textContent = data.ai_response;
+                    document.getElementById('textResponseText').innerHTML = 
+                        '<strong>You:</strong> ' + text + '<br><br>' +
+                        '<strong>Coach:</strong><br>' + data.ai_response;
                     document.getElementById('textResponseOutput').classList.remove('hidden');
                     document.getElementById('userText').value = '';
                     isNewSession = false;
@@ -1115,32 +1300,19 @@ def index():
             }}
         }}
 
+        // Check key usage
         async function checkKeyUsage() {{
             try {{
                 const response = await fetch('/api/key-usage');
                 const data = await response.json();
-                let html = '<table style="width:100%; border-collapse: collapse; margin-top: 15px;"><tr style="background:#f0f0f0;"><th style="border:1px solid #ddd; padding:10px;">Key</th><th style="border:1px solid #ddd; padding:10px;">Requests</th><th style="border:1px solid #ddd; padding:10px;">Success</th><th style="border:1px solid #ddd; padding:10px;">Rate</th></tr>';
+                let html = '<table style="width:100%; border-collapse: collapse; margin-top: 15px;"><tr style="background:#f0f0f0;"><th style="border:1px solid #ddd; padding:12px; text-align:left;">Key</th><th style="border:1px solid #ddd; padding:12px;">Requests</th><th style="border:1px solid #ddd; padding:12px;">Success</th><th style="border:1px solid #ddd; padding:12px;">Rate</th></tr>';
                 for (const [key, stats] of Object.entries(data.usage_last_24h)) {{
-                    html += `<tr><td style="border:1px solid #ddd; padding:10px;">${{key.toUpperCase()}}</td><td style="border:1px solid #ddd; padding:10px;">${{stats.total_requests}}</td><td style="border:1px solid #ddd; padding:10px;">${{stats.successful}}</td><td style="border:1px solid #ddd; padding:10px;">${{stats.success_rate}}</td></tr>`;
+                    html += `<tr><td style="border:1px solid #ddd; padding:12px;">${{key.toUpperCase()}}</td><td style="border:1px solid #ddd; padding:12px;">${{stats.total_requests}}</td><td style="border:1px solid #ddd; padding:12px;">${{stats.successful}}</td><td style="border:1px solid #ddd; padding:12px;">${{stats.success_rate}}</td></tr>`;
                 }}
                 html += '</table>';
                 document.getElementById('statsOutput').innerHTML = html;
             }} catch (error) {{
-                alert('Error: ' + error.message);
-            }}
-        }}
-
-        async function loadSessions() {{
-            try {{
-                const response = await fetch('/api/sessions');
-                if (response.ok) {{
-                    const data = await response.json();
-                    alert('Sessions: ' + JSON.stringify(data, null, 2));
-                }} else {{
-                    alert('Sessions endpoint not found');
-                }}
-            }} catch (error) {{
-                alert('Error: ' + error.message);
+                document.getElementById('statsOutput').innerHTML = '<p style="color: #f44336;">❌ Error: ' + error.message + '</p>';
             }}
         }}
     </script>
