@@ -1,4 +1,3 @@
-# Complete app_loadbalanced.py with Context-Aware Coaching
 import io
 import os
 import base64
@@ -59,7 +58,7 @@ def init_db():
     c.execute('''CREATE TABLE IF NOT EXISTS key_usage
                  (key_name TEXT, timestamp DATETIME, endpoint TEXT, status TEXT)''')
     
-    # Session context (NEW)
+    # Session context
     c.execute('''CREATE TABLE IF NOT EXISTS session_context
                  (session_id TEXT PRIMARY KEY, user_details TEXT, offer_details TEXT, timestamp DATETIME)''')
     
@@ -76,7 +75,6 @@ def format_list(items):
     if isinstance(items, list):
         return '\n'.join([f"• {item}" for item in items])
     return str(items)
-
 
 def build_system_prompt(user_details, offer_details, chat_history):
     """Build comprehensive system prompt with full context"""
@@ -114,7 +112,7 @@ RESPONSE GUIDELINES:
 - Consider their education background
 - Account for cultural context"""
 
-    # Add user context
+    # Add user context ONLY if provided
     if user_details:
         user_context = f"""
 
@@ -128,7 +126,7 @@ Current Role: {user_details.get('current_role', 'Not specified')}
 Career Goal: {user_details.get('career_goal', 'Not specified')}"""
         base_prompt += user_context
 
-    # Add job offer context
+    # Add job offer context ONLY if provided
     if offer_details:
         offer_context = f"""
 
@@ -156,7 +154,7 @@ Size: {offer_details.get('company_size', 'Not specified')}
 Culture Focus: {', '.join(offer_details.get('culture_values', [])) if offer_details.get('culture_values') else 'Not specified'}"""
         base_prompt += offer_context
 
-    # Add chat context
+    # Add chat context if available
     if chat_history and len(chat_history) > 0:
         chat_context = f"""
 
@@ -165,6 +163,7 @@ Messages Exchanged: {len(chat_history)}
 Topics Covered: Interview preparation, technical skills, soft skills, company research"""
         base_prompt += chat_context
 
+    # Final instructions
     final_note = """
 
 ========== IMPORTANT INSTRUCTIONS ==========
@@ -179,16 +178,9 @@ Topics Covered: Interview preparation, technical skills, soft skills, company re
 5. When they practice answers, give SPECIFIC feedback
 6. Always tie your advice back to how it will help them in THIS interview
 7. If they mention concerns or challenges, address them directly
-8. Celebrate their progress and build momentum
-
-FIRST MESSAGE SPECIAL:
-If this is their first message, warmly welcome them and briefly summarize:
-- The position they're preparing for
-- Your understanding of where they need most help
-- Your plan to coach them"""
+8. Celebrate their progress and build momentum"""
 
     return base_prompt + final_note
-
 
 # ========== KEY ROTATION & LOAD BALANCING ==========
 def get_random_key():
@@ -196,15 +188,6 @@ def get_random_key():
     if not gemini_clients:
         return None
     return random.choice(list(gemini_clients.keys()))
-
-
-def get_round_robin_key():
-    """Round-robin key selection"""
-    if not gemini_clients:
-        return None
-    keys = list(gemini_clients.keys())
-    return keys[hash(datetime.now().timestamp()) % len(keys)]
-
 
 def log_key_usage(key_name, endpoint, status="success"):
     """Log which key was used for monitoring"""
@@ -218,7 +201,6 @@ def log_key_usage(key_name, endpoint, status="success"):
     except Exception as e:
         print(f"Database error logging key usage: {e}")
 
-
 # ========== AUDIO PREPROCESSING ==========
 def preprocess_audio(audio_bytes):
     """Simple audio preprocessing"""
@@ -228,7 +210,6 @@ def preprocess_audio(audio_bytes):
     except Exception as e:
         print(f"❌ Audio processing error: {e}")
         return audio_bytes, "audio/webm"
-
 
 # ========== SPEECH-TO-TEXT (Load Balanced) ==========
 def transcribe_with_gemini(audio_bytes, mime_type="audio/webm"):
@@ -253,7 +234,7 @@ If you cannot understand, return: {"text": "", "language": "unknown", "confidenc
             model="gemini-2.5-flash",
             contents=[
                 prompt,
-                types.Part.from_bytes(data=audio_bytes, mime_type=mime_type,)
+                types.Part.from_bytes(data=audio_bytes, mime_type=mime_type)
             ],
             config=types.GenerateContentConfig(
                 temperature=0.1,
@@ -326,7 +307,6 @@ If you cannot understand, return: {"text": "", "language": "unknown", "confidenc
         traceback.print_exc()
         return "Error processing audio. Please try again.", "en"
 
-
 # ========== LANGUAGE DETECTION ==========
 def detect_language_from_text(text):
     """Improved language detection from text"""
@@ -370,7 +350,6 @@ def detect_language_from_text(text):
     
     return 'en'
 
-
 # ========== CONVERSATION MEMORY ==========
 def save_conversation(session_id, user_input, ai_response, language='en'):
     """Save conversation to database"""
@@ -383,7 +362,6 @@ def save_conversation(session_id, user_input, ai_response, language='en'):
         conn.close()
     except Exception as e:
         print(f"Database error: {e}")
-
 
 def get_conversation_history(session_id, limit=10):
     """Get conversation history for a session"""
@@ -398,7 +376,6 @@ def get_conversation_history(session_id, limit=10):
     except Exception as e:
         print(f"Database error: {e}")
         return []
-
 
 # ========== CONTEXT-AWARE AI RESPONSE ==========
 def get_context_aware_response(text, session_id, language, system_prompt, key_name):
@@ -456,7 +433,6 @@ def get_context_aware_response(text, session_id, language, system_prompt, key_na
         traceback.print_exc()
         return "I'm having trouble connecting right now. Please try again."
 
-
 # ========== TEXT-TO-SPEECH ==========
 def text_to_speech(text, language='en'):
     """Convert text to speech using gTTS"""
@@ -483,7 +459,6 @@ def text_to_speech(text, language='en'):
             except:
                 return b''
         return b''
-
 
 # ========== CONTEXT ENDPOINTS ==========
 @app.route('/api/context/save', methods=['POST'])
@@ -521,7 +496,6 @@ def save_context():
         print(f"❌ Save context error: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
-
 @app.route('/api/context/get/<session_id>', methods=['GET'])
 def get_context(session_id):
     """Retrieve context for a session"""
@@ -548,7 +522,6 @@ def get_context(session_id):
         print(f"❌ Get context error: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
-
 # ========== MAIN API ENDPOINTS ==========
 @app.route('/health', methods=['GET'])
 def health():
@@ -561,15 +534,11 @@ def health():
         "multilingual": True,
         "supported_languages": list(LANGUAGE_MAPPING.keys()),
         "audio_support": True,
-        "speech_recognition": "Gemini-native (Load Balanced)",
-        "conversation_engine": "Gemini-native (Load Balanced)",
         "context_awareness": "Enabled",
         "total_rpd_capacity": len(gemini_clients) * 20,
         "load_balancing": "Random rotation across all keys",
-        "python_version": f"{os.sys.version_info.major}.{os.sys.version_info.minor}.{os.sys.version_info.micro}",
         "timestamp": datetime.now().isoformat()
     })
-
 
 @app.route('/api/voice-chat', methods=['POST'])
 def voice_chat():
@@ -581,12 +550,10 @@ def voice_chat():
         
         audio_base64 = data.get('audio')
         session_id = data.get('session_id', 'default_session')
-        language_hint = data.get('language_hint', 'auto')
         
-        # CONTEXT DATA
+        # CONTEXT DATA from frontend
         user_details = data.get('user_details', {})
         offer_details = data.get('offer_details', {})
-        chat_details = data.get('chat_details', {})
         
         if not audio_base64:
             return jsonify({"success": False, "error": "No audio data provided"}), 400
@@ -616,9 +583,6 @@ def voice_chat():
                 "user_text": user_text,
                 "detected_language": detected_language
             }), 400
-        
-        if language_hint != 'auto' and language_hint in LANGUAGE_MAPPING:
-            detected_language = language_hint
         
         print(f"🌐 Detected language: {detected_language}")
         
@@ -679,7 +643,6 @@ def voice_chat():
         traceback.print_exc()
         return jsonify({"success": False, "error": str(e), "message": "Internal server error"}), 500
 
-
 @app.route('/api/text-chat', methods=['POST'])
 def text_chat():
     """Text-only endpoint with context"""
@@ -690,12 +653,10 @@ def text_chat():
         
         text = data.get('text')
         session_id = data.get('session_id', 'default_session')
-        language_hint = data.get('language_hint', 'auto')
         
-        # CONTEXT DATA
+        # CONTEXT DATA from frontend
         user_details = data.get('user_details', {})
         offer_details = data.get('offer_details', {})
-        chat_details = data.get('chat_details', {})
         
         if not text:
             return jsonify({"success": False, "error": "No text provided"}), 400
@@ -705,10 +666,6 @@ def text_chat():
             print(f"👤 User: {user_details.get('name', 'Unknown')}")
         
         detected_language = detect_language_from_text(text)
-        
-        if language_hint != 'auto' and language_hint in LANGUAGE_MAPPING:
-            detected_language = language_hint
-        
         print(f"🌐 Language: {detected_language}")
         
         # Get chat history
@@ -751,34 +708,6 @@ def text_chat():
         traceback.print_exc()
         return jsonify({"success": False, "error": str(e)}), 500
 
-
-@app.route('/api/clear-history', methods=['POST'])
-def clear_history():
-    """Clear conversation history"""
-    try:
-        data = request.json
-        session_id = data.get('session_id', 'default_session')
-        
-        conn = sqlite3.connect(DATABASE_FILE)
-        c = conn.cursor()
-        c.execute("DELETE FROM conversations WHERE session_id=?", (session_id,))
-        deleted = c.rowcount
-        conn.commit()
-        conn.close()
-        
-        print(f"🗑️ Cleared {deleted} messages")
-        
-        return jsonify({
-            "success": True,
-            "message": f"Cleared {deleted} messages",
-            "session_id": session_id
-        })
-        
-    except Exception as e:
-        print(f"❌ Clear history error: {e}")
-        return jsonify({"success": False, "error": str(e)}), 500
-
-
 @app.route('/api/key-usage', methods=['GET'])
 def key_usage():
     """Get API key usage statistics"""
@@ -816,518 +745,170 @@ def key_usage():
         print(f"❌ Key usage error: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
-
+# Serve index page at root
 @app.route('/')
 def index():
-    """Homepage with context-aware coaching"""
+    """Render HTML UI"""
     keys_status = "<br>".join([f"✅ {k.upper()}" for k in gemini_clients.keys()])
     total_rpd = len(gemini_clients) * 20
     
     return f"""
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>🎙️ Talleb 5edma - Interview Coaching</title>
-    <style>
-        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-        body {{
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            padding: 20px;
-            color: #333;
-        }}
-        .container {{ max-width: 1200px; margin: 0 auto; }}
-        .header {{
-            background: white;
-            padding: 30px;
-            border-radius: 15px;
-            margin-bottom: 20px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
-        }}
-        .header h1 {{ margin-bottom: 5px; color: #333; font-size: 28px; }}
-        .header p {{ color: #666; margin-bottom: 20px; }}
-        .session-banner {{
-            background: #e3f2fd;
-            border-left: 4px solid #2196f3;
-            padding: 15px;
-            border-radius: 8px;
-            margin: 20px 0;
-            font-weight: 600;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }}
-        .session-banner.new {{ background: #e8f5e9; border-left-color: #4caf50; }}
-        .session-banner.existing {{ background: #fff3e0; border-left-color: #ff9800; }}
-        .status-box {{
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 20px;
-            margin-top: 20px;
-        }}
-        .status {{
-            padding: 15px;
-            border-radius: 10px;
-            font-size: 14px;
-            line-height: 1.8;
-            background: #e8f5e9;
-            border-left: 4px solid #4caf50;
-        }}
-        .setup-section {{
-            background: white;
-            padding: 25px;
-            border-radius: 15px;
-            margin-bottom: 20px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
-        }}
-        .setup-section h3 {{
-            color: #333;
-            margin-bottom: 15px;
-            font-size: 18px;
-        }}
-        .form-grid {{
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 15px;
-            margin-bottom: 15px;
-        }}
-        input, textarea, select {{
-            padding: 12px;
-            border: 2px solid #e0e0e0;
-            border-radius: 8px;
-            font-family: inherit;
-            font-size: 14px;
-            background: white;
-        }}
-        input:focus, textarea:focus, select:focus {{
-            outline: none;
-            border-color: #667eea;
-            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
-        }}
-        .main-content {{
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 20px;
-        }}
-        .card {{
-            background: white;
-            padding: 25px;
-            border-radius: 15px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
-        }}
-        .card h2 {{ margin-bottom: 20px; color: #333; font-size: 20px; }}
-        textarea.message {{ width: 100%; height: 120px; resize: vertical; }}
-        button {{
-            padding: 12px 20px;
-            border: none;
-            border-radius: 8px;
-            font-size: 14px;
-            font-weight: 600;
-            cursor: pointer;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            transition: all 0.3s ease;
-            margin-top: 10px;
-            margin-right: 10px;
-        }}
-        button:hover {{
-            transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
-        }}
-        button.secondary {{
-            background: #f0f0f0;
-            color: #333;
-        }}
-        button.secondary:hover {{
-            background: #e0e0e0;
-        }}
-        .output {{
-            margin-top: 15px;
-            padding: 15px;
-            background: #f5f5f5;
-            border-radius: 8px;
-            min-height: 60px;
-            border-left: 4px solid #667eea;
-            line-height: 1.6;
-        }}
-        .output.hidden {{ display: none; }}
-        audio {{ width: 100%; margin-top: 10px; }}
-        .tabs {{
-            display: flex;
-            gap: 10px;
-            margin-bottom: 20px;
-            border-bottom: 2px solid #e0e0e0;
-        }}
-        .tab-btn {{
-            padding: 12px 20px;
-            background: transparent;
-            color: #666;
-            border: none;
-            border-bottom: 3px solid transparent;
-            cursor: pointer;
-            margin-top: 0;
-            font-weight: 600;
-            transition: all 0.3s;
-        }}
-        .tab-btn.active {{
-            color: #667eea;
-            border-bottom-color: #667eea;
-        }}
-        .tab-content {{ display: none; }}
-        .tab-content.active {{ display: block; }}
-        @media (max-width: 768px) {{
-            .form-grid {{ grid-template-columns: 1fr; }}
-            .main-content {{ grid-template-columns: 1fr; }}
-            .status-box {{ grid-template-columns: 1fr; }}
-        }}
-    </style>
-</head>
-<body>
-    <div class="container">
-        <!-- Header -->
-        <div class="header">
-            <h1>🎙️ Talleb 5edma - Interview Coaching</h1>
-            <p>Context-Aware AI Interview Coach with Multi-Key Load Balancing</p>
-            
-            <div id="sessionBanner" class="session-banner new">
-                <div>
-                    <span id="sessionIcon">🆕</span>
-                    <span id="sessionText">New Conversation</span> | 
-                    <span id="sessionId" style="font-family: monospace; font-size: 12px;"></span>
-                </div>
-                <button class="secondary" onclick="startNewSession()" style="margin: 0; margin-top: 0;">New Chat</button>
-            </div>
-            
-            <div class="status-box">
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Talleb 5edma - Interview Coaching</title>
+        <style>
+            * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+            body {{
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                min-height: 100vh; padding: 20px;
+            }}
+            .container {{ max-width: 1200px; margin: 0 auto; }}
+            .card {{
+                background: white;
+                padding: 30px;
+                border-radius: 15px;
+                margin-bottom: 20px;
+                box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+            }}
+            h1 {{ margin-bottom: 10px; color: #333; }}
+            p {{ color: #666; margin-bottom: 20px; }}
+            .status {{ padding: 15px; background: #e8f5e9; border-radius: 8px; border-left: 4px solid #4caf50; }}
+            input, textarea {{
+                width: 100%; padding: 12px; margin: 10px 0;
+                border: 2px solid #e0e0e0; border-radius: 8px;
+                font-family: inherit; font-size: 14px;
+            }}
+            input:focus, textarea:focus {{
+                outline: none; border-color: #667eea;
+                box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+            }}
+            button {{
+                padding: 12px 20px; border: none; border-radius: 8px;
+                font-weight: 600; cursor: pointer;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                color: white; margin: 10px 10px 10px 0;
+            }}
+            button:hover {{ transform: translateY(-2px); box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4); }}
+            .output {{
+                margin-top: 15px; padding: 15px;
+                background: #f5f5f5; border-radius: 8px;
+                border-left: 4px solid #667eea; display: none;
+            }}
+            .output.show {{ display: block; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="card">
+                <h1>🎙️ Talleb 5edma - Interview Coaching</h1>
+                <p>Context-Aware AI Interview Coach</p>
                 <div class="status">
-                    <strong>🔑 Active API Keys:</strong><br>
-                    {keys_status}<br><br>
+                    <strong>🔑 Active API Keys:</strong><br>{keys_status}<br><br>
                     <strong>📊 Total RPD:</strong> {total_rpd}/day
                 </div>
-                <div class="status" id="connectionStatus">
-                    <strong>Testing connection...</strong>
-                </div>
             </div>
-        </div>
-
-        <!-- Setup Section -->
-        <div class="setup-section">
-            <h3>👤 Your Profile & Job Details</h3>
-            <div class="form-grid">
-                <input type="text" id="userName" placeholder="Your Name" value="Ahmed">
-                <input type="text" id="experience" placeholder="Experience (e.g., 3 years)" value="3 years">
+            
+            <div class="card">
+                <h3>👤 Your Profile</h3>
+                <input type="text" id="name" placeholder="Your Name" value="Ahmed">
+                <input type="text" id="experience" placeholder="Experience" value="3 years">
                 <input type="text" id="education" placeholder="Education" value="Bachelor in CS">
-                <input type="text" id="currentRole" placeholder="Current Role" value="Junior Developer">
-                <input type="text" id="position" placeholder="Position Applying For" value="Senior Software Engineer">
-                <input type="text" id="company" placeholder="Company" value="Tech Company XYZ">
-                <input type="text" id="industry" placeholder="Industry" value="Software Development">
-                <input type="text" id="requiredSkills" placeholder="Required Skills (comma separated)" 
-                       value="Python, JavaScript, AWS, System Design">
+                <input type="text" id="position" placeholder="Position" value="Senior Software Engineer">
+                <input type="text" id="company" placeholder="Company" value="Tech Corp">
+                <input type="text" id="skills" placeholder="Skills (comma separated)" value="Python, JavaScript, AWS">
+                <button onclick="saveContext()">💾 Save Context</button>
             </div>
-            <button onclick="saveContext()" style="background: linear-gradient(135deg, #4caf50 0%, #45a049 100%);">💾 Save Context</button>
-            <div id="contextStatus"></div>
-        </div>
-
-        <!-- Chat Tabs -->
-        <div class="tabs">
-            <button class="tab-btn active" onclick="switchTab('voice')">🎤 Voice Chat</button>
-            <button class="tab-btn" onclick="switchTab('text')">💬 Text Chat</button>
-            <button class="tab-btn" onclick="switchTab('stats')">📊 Statistics</button>
-        </div>
-
-        <!-- Voice Chat Tab -->
-        <div id="voice" class="tab-content active">
+            
             <div class="card">
-                <h2>🎤 Voice Chat</h2>
-                <p style="color: #666; margin-bottom: 15px;">Record your voice and get AI coaching response</p>
-                <button onclick="startRecording()" id="recordBtn">🎤 Start Recording</button>
-                <button class="secondary" id="stopBtn" style="display: none;" onclick="stopRecording()">⏹️ Stop Recording</button>
-                <div id="voiceResponseOutput" class="output hidden">
-                    <div id="voiceResponseText"></div>
-                    <audio id="responseAudio" controls></audio>
+                <h3>💬 Text Chat</h3>
+                <textarea id="message" placeholder="Type your question..." rows="4"></textarea>
+                <button onclick="sendText()">📤 Send</button>
+                <div id="textOutput" class="output">
+                    <div id="textResponse"></div>
                 </div>
             </div>
         </div>
-
-        <!-- Text Chat Tab -->
-        <div id="text" class="tab-content">
-            <div class="card">
-                <h2>💬 Text Chat</h2>
-                <p style="color: #666; margin-bottom: 15px;">Type your questions and get instant feedback</p>
-                <textarea id="userText" class="message" placeholder="Type your message..."></textarea>
-                <button onclick="sendText()">📤 Send Message</button>
-                <div id="textResponseOutput" class="output hidden">
-                    <div id="textResponseText"></div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Stats Tab -->
-        <div id="stats" class="tab-content">
-            <div class="card">
-                <h2>📊 System Statistics</h2>
-                <button class="secondary" onclick="checkKeyUsage()">🔑 View API Key Usage</button>
-                <div id="statsOutput" style="margin-top: 20px;"></div>
-            </div>
-        </div>
-    </div>
-
-    <script>
-        let mediaRecorder;
-        let audioChunks = [];
-        let isRecording = false;
-        let sessionId = localStorage.getItem('sessionId') || Math.random().toString(36).substr(2, 9);
-        let isNewSession = !localStorage.getItem('sessionId');
-        let userDetails = {{}};
-        let offerDetails = {{}};
-
-        // Initialize on page load
-        window.addEventListener('load', () => {{
-            localStorage.setItem('sessionId', sessionId);
-            updateSessionDisplay();
-            testHealth();
-        }});
-
-        // Tab switching
-        function switchTab(tabName) {{
-            // Hide all tabs
-            document.querySelectorAll('.tab-content').forEach(tab => tab.classList.remove('active'));
-            document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+        
+        <script>
+            let userDetails = {{}};
+            let offerDetails = {{}};
+            let sessionId = localStorage.getItem('sessionId') || Math.random().toString(36).substr(2, 9);
             
-            // Show selected tab
-            document.getElementById(tabName).classList.add('active');
-            event.target.classList.add('active');
-        }}
-
-        // Update session display
-        function updateSessionDisplay() {{
-            const banner = document.getElementById('sessionBanner');
-            const icon = document.getElementById('sessionIcon');
-            const text = document.getElementById('sessionText');
-            const idEl = document.getElementById('sessionId');
-            
-            idEl.textContent = sessionId;
-            
-            if (isNewSession) {{
-                banner.className = 'session-banner new';
-                icon.textContent = '🆕';
-                text.textContent = 'New Conversation';
-            }} else {{
-                banner.className = 'session-banner existing';
-                icon.textContent = '📦';
-                text.textContent = 'Existing Conversation';
-            }}
-        }}
-
-        // Save context
-        async function saveContext() {{
-            userDetails = {{
-                name: document.getElementById('userName').value,
-                experience_level: document.getElementById('experience').value,
-                education: document.getElementById('education').value,
-                languages: ['Arabic', 'English'],
-                country: 'Egypt',
-                current_role: document.getElementById('currentRole').value,
-                career_goal: 'Professional Growth'
-            }};
-            
-            offerDetails = {{
-                position: document.getElementById('position').value,
-                company: document.getElementById('company').value,
-                industry: document.getElementById('industry').value,
-                job_level: 'Senior',
-                required_skills: document.getElementById('requiredSkills').value.split(',').map(s => s.trim()),
-                preferred_qualifications: ['Leadership', 'Mentoring'],
-                responsibilities: ['Lead features', 'Code review', 'Mentor team'],
-                salary_range: 'Competitive',
-                benefits: ['Health', 'Remote', 'Development'],
-                company_size: '500+',
-                culture_values: ['Innovation', 'Collaboration']
-            }};
-            
-            try {{
-                const response = await fetch('/api/context/save', {{
+            function saveContext() {{
+                userDetails = {{
+                    name: document.getElementById('name').value,
+                    experience_level: document.getElementById('experience').value,
+                    education: document.getElementById('education').value,
+                    languages: ['Arabic', 'English'],
+                    country: 'Egypt',
+                    current_role: 'Developer',
+                    career_goal: 'Professional Growth'
+                }};
+                
+                offerDetails = {{
+                    position: document.getElementById('position').value,
+                    company: document.getElementById('company').value,
+                    industry: 'Software Development',
+                    job_level: 'Senior',
+                    required_skills: document.getElementById('skills').value.split(',').map(s => s.trim()),
+                    preferred_qualifications: ['Leadership'],
+                    responsibilities: ['Lead features'],
+                    salary_range: 'Competitive',
+                    benefits: ['Health', 'Remote'],
+                    company_size: '500+',
+                    culture_values: ['Innovation']
+                }};
+                
+                fetch('/api/context/save', {{
                     method: 'POST',
-                    headers: {{ 'Content-Type': 'application/json' }},
+                    headers: {{'Content-Type': 'application/json'}},
                     body: JSON.stringify({{
                         session_id: sessionId,
                         user_details: userDetails,
                         offer_details: offerDetails
                     }})
+                }}).then(r => r.json()).then(d => {{
+                    if (d.success) alert('✅ Context saved!');
+                    else alert('❌ Error: ' + d.error);
                 }});
-                
-                const data = await response.json();
-                if (data.success) {{
-                    document.getElementById('contextStatus').innerHTML = 
-                        '✅ <strong>Context saved!</strong><br>' +
-                        '👤 ' + userDetails.name + ' | ' +
-                        '💼 ' + offerDetails.position + ' @ ' + offerDetails.company;
-                    document.getElementById('contextStatus').style.color = '#4caf50';
-                    document.getElementById('contextStatus').style.marginTop = '10px';
-                }} else {{
-                    document.getElementById('contextStatus').textContent = '❌ Error: ' + data.error;
-                    document.getElementById('contextStatus').style.color = '#f44336';
-                }}
-            }} catch (error) {{
-                document.getElementById('contextStatus').textContent = '❌ Error: ' + error.message;
-                document.getElementById('contextStatus').style.color = '#f44336';
             }}
-        }}
-
-        // Start new session
-        function startNewSession() {{
-            if (!confirm('Start a new conversation?')) return;
-            sessionId = Math.random().toString(36).substr(2, 9);
-            localStorage.setItem('sessionId', sessionId);
-            isNewSession = true;
-            location.reload();
-        }}
-
-        // Test health
-        async function testHealth() {{
-            try {{
-                const response = await fetch('/health');
-                const data = await response.json();
-                document.getElementById('connectionStatus').innerHTML = `
-                    <strong>✅ Backend Connected</strong><br>
-                    Active Keys: ${{data.total_keys}}<br>
-                    Total RPD: ${{data.total_rpd_capacity}}/day<br>
-                    Context Aware: Yes
-                `;
-            }} catch (error) {{
-                document.getElementById('connectionStatus').innerHTML = 
-                    '<strong>❌ Connection Failed</strong><br>' + error.message;
-            }}
-        }}
-
-        // Voice recording
-        async function startRecording() {{
-            if (!isRecording) {{
-                try {{
-                    const stream = await navigator.mediaDevices.getUserMedia({{ audio: true }});
-                    mediaRecorder = new MediaRecorder(stream);
-                    audioChunks = [];
-                    mediaRecorder.ondataavailable = (e) => audioChunks.push(e.data);
-                    mediaRecorder.onstop = sendAudio;
-                    mediaRecorder.start();
-                    isRecording = true;
-                    document.getElementById('recordBtn').style.display = 'none';
-                    document.getElementById('stopBtn').style.display = 'inline-block';
-                }} catch (error) {{
-                    alert('Microphone error: ' + error.message);
-                }}
-            }}
-        }}
-
-        function stopRecording() {{
-            if (mediaRecorder) {{
-                mediaRecorder.stop();
-                isRecording = false;
-                document.getElementById('stopBtn').style.display = 'none';
-                document.getElementById('recordBtn').style.display = 'inline-block';
-            }}
-        }}
-
-        // Send audio
-        async function sendAudio() {{
-            const blob = new Blob(audioChunks, {{ type: 'audio/webm' }});
-            const reader = new FileReader();
-            reader.onload = async () => {{
-                const base64 = reader.result.split(',');
-                try {{
-                    const response = await fetch('/api/voice-chat', {{
-                        method: 'POST',
-                        headers: {{ 'Content-Type': 'application/json' }},
-                        body: JSON.stringify({{
-                            audio: base64,
-                            session_id: sessionId,
-                            user_details: userDetails,
-                            offer_details: offerDetails
-                        }})
-                    }});
-                    const data = await response.json();
-                    if (data.success) {{
-                        document.getElementById('voiceResponseText').innerHTML = 
-                            '<strong>🎤 Your audio:</strong> ' + data.user_text + '<br><br>' +
-                            '<strong>🤖 Coach response:</strong><br>' + data.ai_response;
-                        document.getElementById('responseAudio').src = 'data:audio/mp3;base64,' + data.audio;
-                        document.getElementById('voiceResponseOutput').classList.remove('hidden');
-                        isNewSession = false;
-                        updateSessionDisplay();
-                    }} else {{
-                        alert('Error: ' + data.error);
-                    }}
-                }} catch (error) {{
-                    alert('Error: ' + error.message);
-                }}
-            }};
-            reader.readAsDataURL(blob);
-        }}
-
-        // Send text
-        async function sendText() {{
-            const text = document.getElementById('userText').value.trim();
-            if (!text) return alert('Enter text');
             
-            try {{
-                const response = await fetch('/api/text-chat', {{
+            function sendText() {{
+                const text = document.getElementById('message').value.trim();
+                if (!text) return alert('Enter text');
+                
+                fetch('/api/text-chat', {{
                     method: 'POST',
-                    headers: {{ 'Content-Type': 'application/json' }},
+                    headers: {{'Content-Type': 'application/json'}},
                     body: JSON.stringify({{
                         text: text,
                         session_id: sessionId,
                         user_details: userDetails,
                         offer_details: offerDetails
                     }})
+                }}).then(r => r.json()).then(d => {{
+                    if (d.success) {{
+                        document.getElementById('textResponse').innerHTML = 
+                            '<strong>You:</strong> ' + text + '<br><br>' +
+                            '<strong>Coach:</strong><br>' + d.ai_response;
+                        document.getElementById('textOutput').classList.add('show');
+                        document.getElementById('message').value = '';
+                    }} else {{
+                        alert('Error: ' + d.error);
+                    }}
                 }});
-                const data = await response.json();
-                if (data.success) {{
-                    document.getElementById('textResponseText').innerHTML = 
-                        '<strong>You:</strong> ' + text + '<br><br>' +
-                        '<strong>Coach:</strong><br>' + data.ai_response;
-                    document.getElementById('textResponseOutput').classList.remove('hidden');
-                    document.getElementById('userText').value = '';
-                    isNewSession = false;
-                    updateSessionDisplay();
-                }} else {{
-                    alert('Error: ' + data.error);
-                }}
-            }} catch (error) {{
-                alert('Error: ' + error.message);
             }}
-        }}
-
-        // Check key usage
-        async function checkKeyUsage() {{
-            try {{
-                const response = await fetch('/api/key-usage');
-                const data = await response.json();
-                let html = '<table style="width:100%; border-collapse: collapse; margin-top: 15px;"><tr style="background:#f0f0f0;"><th style="border:1px solid #ddd; padding:12px; text-align:left;">Key</th><th style="border:1px solid #ddd; padding:12px;">Requests</th><th style="border:1px solid #ddd; padding:12px;">Success</th><th style="border:1px solid #ddd; padding:12px;">Rate</th></tr>';
-                for (const [key, stats] of Object.entries(data.usage_last_24h)) {{
-                    html += `<tr><td style="border:1px solid #ddd; padding:12px;">${{key.toUpperCase()}}</td><td style="border:1px solid #ddd; padding:12px;">${{stats.total_requests}}</td><td style="border:1px solid #ddd; padding:12px;">${{stats.successful}}</td><td style="border:1px solid #ddd; padding:12px;">${{stats.success_rate}}</td></tr>`;
-                }}
-                html += '</table>';
-                document.getElementById('statsOutput').innerHTML = html;
-            }} catch (error) {{
-                document.getElementById('statsOutput').innerHTML = '<p style="color: #f44336;">❌ Error: ' + error.message + '</p>';
-            }}
-        }}
-    </script>
-</body>
-</html>
-"""
+        </script>
+    </body>
+    </html>
+    """
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    print(f"🚀 Starting Talleb 5edma - Interview Coaching (Load Balanced + Context-Aware)")
+    print(f"🚀 Starting Talleb 5edma - Interview Coaching")
     print(f"🚀 Port: {port}")
     print(f"🔑 Active API Keys: {len(gemini_clients)}")
     print(f"📊 Total RPD Capacity: {len(gemini_clients) * 20}")
-    print(f"⚖️ Load Balancing: Enabled (Random Rotation)")
-    print(f"🧠 Context Awareness: Enabled")
-    print(f"💾 Session Management: Enabled")
-    print(f"🌍 Languages Supported: {len(LANGUAGE_MAPPING)}")
     app.run(host='0.0.0.0', port=port, debug=False)
