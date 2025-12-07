@@ -88,15 +88,6 @@ def log_key_usage(key_name, endpoint, status="success"):
     except Exception as e:
         print(f"Database error logging key usage: {e}")
 
-def preprocess_audio(audio_bytes):
-    """Simple audio preprocessing"""
-    try:
-        print(f"🎵 Processing audio: {len(audio_bytes)} bytes")
-        return audio_bytes, "audio/webm"
-    except Exception as e:
-        print(f"❌ Audio processing error: {e}")
-        return audio_bytes, "audio/webm"
-
 def detect_language_from_text(text):
     """Improved language detection from text"""
     if not text or not text.strip():
@@ -168,7 +159,6 @@ def get_conversation_history(session_id, limit=10):
 # ========== SYSTEM PROMPT BUILDERS ==========
 def build_system_prompt(user_details, offer_details, chat_history):
     """Build coaching system prompt"""
-    
     base_prompt = """You are an expert job interview coach for "Talleb 5edma" (طلب خدمة - Interview Preparation Service).
 
 CORE ROLE:
@@ -177,30 +167,19 @@ CORE ROLE:
 - Give constructive feedback on responses
 - Build confidence and professionalism
 
-COACHING STYLE:
-1. Be encouraging and supportive
-2. Give specific, actionable advice
-3. Correct mistakes diplomatically
-4. Provide example answers when helpful
-5. Refer back to previous advice
-6. Tailor all advice to their specific opportunity
-
 RESPONSE GUIDELINES:
 - Always respond in the language the user is using
-- Keep responses concise but thorough (2-4 sentences typically)
+- Keep responses concise but thorough (2-4 sentences)
 - Be specific to their job opportunity
-- Reference their experience level
-- Consider their education background"""
+- Reference their experience level"""
 
     if user_details:
         user_context = f"""
 
 ========== ABOUT THE USER ==========
 Name: {user_details.get('name', 'Unknown')}
-Experience Level: {user_details.get('experience_level', 'Not specified')}
+Experience: {user_details.get('experience_level', 'Not specified')}
 Education: {user_details.get('education', 'Not specified')}
-Languages: {', '.join(user_details.get('languages', ['English'])) if isinstance(user_details.get('languages'), list) else user_details.get('languages', 'English')}
-Current Role: {user_details.get('current_role', 'Not specified')}
 Skills: {', '.join(user_details.get('skills', [])) if isinstance(user_details.get('skills'), list) else user_details.get('skills', 'Not specified')}"""
         base_prompt += user_context
 
@@ -210,28 +189,15 @@ Skills: {', '.join(user_details.get('skills', [])) if isinstance(user_details.ge
 ========== ABOUT THE JOB OPPORTUNITY ==========
 Position: {offer_details.get('position', 'Not specified')}
 Company: {offer_details.get('company', 'Not specified')}
-Industry: {offer_details.get('industry', 'Not specified')}
-Job Level: {offer_details.get('job_level', 'Not specified')}
-
-KEY REQUIREMENTS:
-{format_list(offer_details.get('required_skills', []))}
-
-SALARY RANGE:
-{offer_details.get('salary_range', 'Not specified')}
-
-LOCATION:
-{offer_details.get('location', 'Not specified')}"""
+Requirements: {', '.join(offer_details.get('required_skills', [])) if isinstance(offer_details.get('required_skills'), list) else offer_details.get('required_skills', 'Not specified')}
+Salary: {offer_details.get('salary_range', 'Not specified')}"""
         base_prompt += offer_context
 
     return base_prompt
 
 def build_employer_interview_prompt(user_details, offer_details, chat_history):
     """Build employer role play system prompt"""
-    
     prompt = f"""You are a professional hiring manager conducting a MOCK INTERVIEW.
-
-YOUR ROLE:
-Act as the actual employer/hiring manager to conduct a realistic interview.
 
 CANDIDATE INFORMATION:
 Name: {user_details.get('name', 'Candidate')}
@@ -242,26 +208,24 @@ Skills: {', '.join(user_details.get('skills', [])) if isinstance(user_details.ge
 JOB POSITION:
 Title: {offer_details.get('position', 'Not specified')}
 Company: {offer_details.get('company', 'Not specified')}
-Key Requirements: {', '.join(offer_details.get('required_skills', [])) if isinstance(offer_details.get('required_skills'), list) else offer_details.get('required_skills', 'Not specified')}
-Location: {offer_details.get('location', 'Not specified')}
-Salary Range: {offer_details.get('salary_range', 'Competitive')}
+Requirements: {', '.join(offer_details.get('required_skills', [])) if isinstance(offer_details.get('required_skills'), list) else offer_details.get('required_skills', 'Not specified')}
 
 INTERVIEW GUIDELINES:
-1. Start with a brief greeting if this is the first message
-2. Ask 1-2 relevant questions per turn (not too many)
-3. Reference their specific experience when relevant
-4. Ask about technical skills and problem-solving
+1. Start with greeting if first message
+2. Ask 1-2 relevant questions per turn
+3. Reference their specific experience
+4. Ask technical questions
 5. Probe for gaps or areas that need clarification
-6. Provide constructive feedback on their responses
-7. Evaluate if they're a good fit for the role
-8. Remember everything they said in this interview
+6. Provide constructive feedback
+7. Evaluate fit for role
+8. Remember everything they said
 
 IMPORTANT:
 - Be professional but approachable
 - Ask open-ended questions (not yes/no)
 - React naturally to their answers
-- Make it feel like a real interview
-- Don't give away answers - make them think
+- Make it feel like a REAL interview
+- Don't give away answers
 - Focus on assessing fit for THIS specific role"""
 
     return prompt
@@ -305,13 +269,10 @@ If you cannot understand, return: {"text": "", "language": "unknown", "confidenc
         
         log_key_usage(key_name, "/api/voice-chat", "success")
         
-        if not response or not hasattr(response, 'candidates') or not response.candidates:
-            return "Could not transcribe audio. Please try again.", "en"
-        
         result_text = None
         if hasattr(response, 'text') and response.text:
             result_text = response.text.strip()
-        elif response.candidates and len(response.candidates) > 0:
+        elif response and hasattr(response, 'candidates') and response.candidates:
             candidate = response.candidates[0]
             if hasattr(candidate, 'content') and candidate.content:
                 if hasattr(candidate.content, 'parts') and candidate.content.parts:
@@ -415,19 +376,10 @@ def text_to_speech(text, language='en'):
         audio_bytes = audio_buffer.read()
         
         print(f"✅ Generated TTS audio ({tts_lang}): {len(audio_bytes)} bytes")
-        return audio_bytes
+        return base64.b64encode(audio_bytes).decode('utf-8')
     except Exception as e:
         print(f"❌ TTS error: {e}")
-        if language != 'en':
-            try:
-                tts = gTTS(text=text, lang='en', slow=False)
-                audio_buffer = io.BytesIO()
-                tts.write_to_fp(audio_buffer)
-                audio_buffer.seek(0)
-                return audio_buffer.read()
-            except:
-                return b''
-        return b''
+        return None
 
 # ========== API ENDPOINTS ==========
 @app.route('/health', methods=['GET'])
@@ -438,8 +390,7 @@ def health():
         "total_keys": len(gemini_clients),
         "active_keys": list(gemini_clients.keys()),
         "gemini_api": "gemini-2.5-flash",
-        "multilingual": True,
-        "supported_languages": list(LANGUAGE_MAPPING.keys()),
+        "endpoints": ["/api/text-chat", "/api/voice-chat", "/api/context/save"],
         "total_rpd_capacity": len(gemini_clients) * 20,
         "timestamp": datetime.now().isoformat()
     })
@@ -454,7 +405,7 @@ def text_chat():
         
         text = data.get('text')
         session_id = data.get('session_id', 'default_session')
-        mode = data.get('mode', 'coaching')  # 'coaching' or 'employer_interview'
+        mode = data.get('mode', 'coaching')
         
         user_details = data.get('user_details', {})
         offer_details = data.get('offer_details', {})
@@ -465,21 +416,15 @@ def text_chat():
         print(f"💬 {mode.upper()} Mode: {text}")
         
         detected_language = detect_language_from_text(text)
-        print(f"🌐 Language: {detected_language}")
-        
-        # Get chat history
         history = get_conversation_history(session_id, limit=10)
         
-        # Build appropriate prompt based on mode
         if mode == 'employer_interview':
             system_prompt = build_employer_interview_prompt(user_details, offer_details, history)
         else:
             system_prompt = build_system_prompt(user_details, offer_details, history)
         
-        # Select random key for load balancing
         key_name = get_random_key()
         
-        # Get context-aware response
         ai_response = get_context_aware_response(
             text=text,
             session_id=session_id,
@@ -493,17 +438,80 @@ def text_chat():
             "ai_response": ai_response,
             "mode": mode,
             "detected_language": detected_language,
-            "session_id": session_id,
-            "context_used": {
-                "candidate_name": user_details.get('name', 'Unknown'),
-                "position": offer_details.get('position', 'Not specified'),
-                "company": offer_details.get('company', 'Not specified'),
-                "api_key_used": key_name
-            }
+            "session_id": session_id
         })
         
     except Exception as e:
         print(f"❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/api/voice-chat', methods=['POST'])
+def voice_chat():
+    """Voice chat endpoint - transcribes audio and responds"""
+    try:
+        if 'audio' not in request.files:
+            return jsonify({"success": False, "error": "No audio file provided"}), 400
+        
+        audio_file = request.files['audio']
+        session_id = request.form.get('session_id', 'default_session')
+        mode = request.form.get('mode', 'coaching')
+        
+        user_details = json.loads(request.form.get('user_details', '{}'))
+        offer_details = json.loads(request.form.get('offer_details', '{}'))
+        
+        if not audio_file:
+            return jsonify({"success": False, "error": "No audio data"}), 400
+        
+        print(f"🎤 Voice chat received ({len(audio_file.read())} bytes)")
+        audio_file.seek(0)
+        audio_bytes = audio_file.read()
+        
+        # Step 1: Transcribe audio
+        transcribed_text, detected_language = transcribe_with_gemini(audio_bytes, "audio/webm")
+        print(f"✅ Transcribed: {transcribed_text}")
+        
+        if not transcribed_text or "Error" in transcribed_text or "Could" in transcribed_text:
+            return jsonify({
+                "success": False,
+                "error": transcribed_text,
+                "detected_language": detected_language
+            }), 400
+        
+        # Step 2: Build system prompt based on mode
+        history = get_conversation_history(session_id, limit=10)
+        
+        if mode == 'employer_interview':
+            system_prompt = build_employer_interview_prompt(user_details, offer_details, history)
+        else:
+            system_prompt = build_system_prompt(user_details, offer_details, history)
+        
+        # Step 3: Get AI response
+        key_name = get_random_key()
+        ai_response = get_context_aware_response(
+            text=transcribed_text,
+            session_id=session_id,
+            language=detected_language,
+            system_prompt=system_prompt,
+            key_name=key_name
+        )
+        
+        # Step 4: Convert response to speech
+        audio_response_b64 = text_to_speech(ai_response, detected_language)
+        
+        return jsonify({
+            "success": True,
+            "transcribed_text": transcribed_text,
+            "ai_response": ai_response,
+            "audio_response": audio_response_b64,
+            "mode": mode,
+            "detected_language": detected_language,
+            "session_id": session_id
+        })
+        
+    except Exception as e:
+        print(f"❌ Voice chat error: {e}")
         import traceback
         traceback.print_exc()
         return jsonify({"success": False, "error": str(e)}), 500
@@ -516,7 +524,6 @@ def save_context():
         session_id = data.get('session_id')
         user_details = data.get('user_details', {})
         offer_details = data.get('offer_details', {})
-        chat_history = data.get('chat_history', [])
         
         if not session_id:
             return jsonify({"success": False, "error": "Session ID required"}), 400
@@ -526,7 +533,7 @@ def save_context():
         
         c.execute("INSERT OR REPLACE INTO session_context VALUES (?, ?, ?, ?, ?)",
                   (session_id, json.dumps(user_details), json.dumps(offer_details), 
-                   json.dumps(chat_history), datetime.now()))
+                   '[]', datetime.now()))
         
         conn.commit()
         conn.close()
@@ -543,414 +550,26 @@ def save_context():
         print(f"❌ Save context error: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
-@app.route('/api/key-usage', methods=['GET'])
-def key_usage():
-    """Get API key usage statistics"""
-    try:
-        conn = sqlite3.connect(DATABASE_FILE)
-        c = conn.cursor()
-        c.execute("""
-            SELECT key_name, COUNT(*) as total_requests, 
-                   SUM(CASE WHEN status='success' THEN 1 ELSE 0 END) as successful
-            FROM key_usage
-            WHERE timestamp > datetime('now', '-1 day')
-            GROUP BY key_name
-        """)
-        results = c.fetchall()
-        conn.close()
-        
-        usage = {}
-        for key_name, total, success in results:
-            usage[key_name] = {
-                "total_requests": total,
-                "successful": success or 0,
-                "success_rate": f"{(success or 0) / total * 100:.1f}%" if total > 0 else "0%"
-            }
-        
-        return jsonify({
-            "active_keys": len(gemini_clients),
-            "total_capacity_rpd": len(gemini_clients) * 20,
-            "usage_last_24h": usage
-        })
-        
-    except Exception as e:
-        print(f"❌ Key usage error: {e}")
-        return jsonify({"success": False, "error": str(e)}), 500
-
-# ========== HTML INTERFACE ==========
 @app.route('/')
 def index():
-    """Main UI interface"""
-    keys_status = "<br>".join([f"✅ {k.upper()}" for k in gemini_clients.keys()])
-    total_rpd = len(gemini_clients) * 20
-    
-    return f"""
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Talleb 5edma - Interview Coaching</title>
-    <style>
-        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-        body {{
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            padding: 20px;
-            color: #333;
-        }}
-        .container {{ max-width: 1200px; margin: 0 auto; }}
-        .header {{
-            background: white;
-            padding: 30px;
-            border-radius: 15px;
-            margin-bottom: 20px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
-        }}
-        .header h1 {{ margin-bottom: 5px; font-size: 28px; }}
-        .header p {{ color: #666; margin-bottom: 20px; }}
-        .status-box {{
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 20px;
-            margin-top: 20px;
-        }}
-        .status {{
-            padding: 15px;
-            border-radius: 10px;
-            font-size: 14px;
-            line-height: 1.8;
-            background: #e8f5e9;
-            border-left: 4px solid #4caf50;
-        }}
-        .setup-section {{
-            background: white;
-            padding: 25px;
-            border-radius: 15px;
-            margin-bottom: 20px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
-        }}
-        .setup-section h3 {{
-            color: #333;
-            margin-bottom: 15px;
-            font-size: 18px;
-        }}
-        .form-grid {{
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 15px;
-            margin-bottom: 15px;
-        }}
-        input, textarea, select {{
-            padding: 12px;
-            border: 2px solid #e0e0e0;
-            border-radius: 8px;
-            font-family: inherit;
-            font-size: 14px;
-            background: white;
-        }}
-        input:focus, textarea:focus, select:focus {{
-            outline: none;
-            border-color: #667eea;
-            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
-        }}
-        .tabs {{
-            display: flex;
-            gap: 10px;
-            margin-bottom: 20px;
-            border-bottom: 2px solid #e0e0e0;
-        }}
-        .tab-btn {{
-            padding: 12px 20px;
-            background: transparent;
-            color: #666;
-            border: none;
-            border-bottom: 3px solid transparent;
-            cursor: pointer;
-            margin-top: 0;
-            font-weight: 600;
-            transition: all 0.3s;
-        }}
-        .tab-btn.active {{
-            color: #667eea;
-            border-bottom-color: #667eea;
-        }}
-        .tab-content {{ display: none; }}
-        .tab-content.active {{ display: block; }}
-        .card {{
-            background: white;
-            padding: 25px;
-            border-radius: 15px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
-        }}
-        .card h2 {{ margin-bottom: 20px; color: #333; font-size: 20px; }}
-        .card p {{ color: #666; margin-bottom: 15px; }}
-        textarea.message {{ width: 100%; height: 120px; resize: vertical; }}
-        button {{
-            padding: 12px 20px;
-            border: none;
-            border-radius: 8px;
-            font-size: 14px;
-            font-weight: 600;
-            cursor: pointer;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            transition: all 0.3s ease;
-            margin-top: 10px;
-            margin-right: 10px;
-        }}
-        button:hover {{
-            transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
-        }}
-        button.secondary {{
-            background: #f0f0f0;
-            color: #333;
-        }}
-        button.secondary:hover {{
-            background: #e0e0e0;
-        }}
-        .output {{
-            margin-top: 15px;
-            padding: 15px;
-            background: #f5f5f5;
-            border-radius: 8px;
-            border-left: 4px solid #667eea;
-            line-height: 1.6;
-            display: none;
-        }}
-        .output.show {{ display: block; }}
-        .mode-selector {{
-            margin-bottom: 15px;
-            padding: 15px;
-            background: #f5f5f5;
-            border-radius: 8px;
-        }}
-        .mode-selector label {{
-            display: inline-flex;
-            align-items: center;
-            margin-right: 20px;
-            cursor: pointer;
-        }}
-        .mode-selector input[type="radio"] {{
-            margin-right: 8px;
-            cursor: pointer;
-        }}
-        @media (max-width: 768px) {{
-            .form-grid {{ grid-template-columns: 1fr; }}
-            .status-box {{ grid-template-columns: 1fr; }}
-        }}
-    </style>
-</head>
-<body>
-    <div class="container">
-        <!-- Header -->
-        <div class="header">
-            <h1>🎙️ Talleb 5edma - Interview Coaching</h1>
-            <p>AI Interview Coach with Context-Aware Employer Role Play</p>
-            
-            <div class="status-box">
-                <div class="status">
-                    <strong>🔑 Active API Keys:</strong><br>
-                    {keys_status}<br><br>
-                    <strong>📊 Total RPD:</strong> {total_rpd}/day
-                </div>
-                <div class="status" id="connectionStatus">
-                    <strong>Testing connection...</strong>
-                </div>
-            </div>
-        </div>
-
-        <!-- Setup Section -->
-        <div class="setup-section">
-            <h3>👤 Interview Setup</h3>
-            <div class="form-grid">
-                <input type="text" id="name" placeholder="Your Name" value="Ahmed">
-                <input type="text" id="experience" placeholder="Experience (e.g., 3 years)" value="3 years">
-                <input type="text" id="education" placeholder="Education" value="Bachelor in CS">
-                <input type="text" id="currentRole" placeholder="Current Role" value="Junior Developer">
-                <input type="text" id="position" placeholder="Position Applying For" value="Senior Software Engineer">
-                <input type="text" id="company" placeholder="Company" value="Tech Company XYZ">
-                <input type="text" id="industry" placeholder="Industry" value="Software Development">
-                <input type="text" id="requiredSkills" placeholder="Required Skills (comma separated)" 
-                       value="Python, JavaScript, AWS, System Design">
-            </div>
-            <button onclick="saveContext()" style="background: linear-gradient(135deg, #4caf50 0%, #45a049 100%);">💾 Save Context</button>
-            <div id="contextStatus"></div>
-        </div>
-
-        <!-- Mode Selector -->
-        <div class="setup-section">
-            <h3>🎯 Interview Mode</h3>
-            <div class="mode-selector">
-                <label>
-                    <input type="radio" name="mode" value="coaching" checked>
-                    🧑‍🏫 Coaching Mode (AI as coach)
-                </label>
-                <label>
-                    <input type="radio" name="mode" value="employer_interview">
-                    👔 Employer Mode (AI as real employer)
-                </label>
-            </div>
-            <p style="color: #666; font-size: 13px;">
-                <strong>Coaching Mode:</strong> AI helps you prepare with advice and guidance<br>
-                <strong>Employer Mode:</strong> AI conducts realistic interviews as a hiring manager
-            </p>
-        </div>
-
-        <!-- Tabs -->
-        <div class="tabs">
-            <button class="tab-btn active" onclick="switchTab('text')">💬 Text Chat</button>
-            <button class="tab-btn" onclick="switchTab('stats')">📊 Statistics</button>
-        </div>
-
-        <!-- Text Chat Tab -->
-        <div id="text" class="tab-content active">
-            <div class="card">
-                <h2>💬 Chat with AI</h2>
-                <textarea id="userText" class="message" placeholder="Type your message or answer..."></textarea>
-                <button onclick="sendText()">📤 Send Message</button>
-                <div id="textResponseOutput" class="output">
-                    <div id="textResponseText"></div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Statistics Tab -->
-        <div id="stats" class="tab-content">
-            <div class="card">
-                <h2>📊 System Statistics</h2>
-                <button class="secondary" onclick="checkKeyUsage()">🔑 View API Key Usage</button>
-                <div id="statsOutput" style="margin-top: 20px;"></div>
-            </div>
-        </div>
-    </div>
-
-    <script>
-        let userDetails = {{}};
-        let offerDetails = {{}};
-        let sessionId = localStorage.getItem('sessionId') || Math.random().toString(36).substr(2, 9);
-
-        window.addEventListener('load', () => {{
-            localStorage.setItem('sessionId', sessionId);
-            testHealth();
-        }});
-
-        function switchTab(tabName) {{
-            document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
-            document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-            document.getElementById(tabName).classList.add('active');
-            event.target.classList.add('active');
-        }}
-
-        function saveContext() {{
-            userDetails = {{
-                name: document.getElementById('name').value,
-                experience_level: document.getElementById('experience').value,
-                education: document.getElementById('education').value,
-                languages: ['Arabic', 'English'],
-                country: 'Egypt',
-                current_role: document.getElementById('currentRole').value,
-                career_goal: 'Professional Growth',
-                skills: document.getElementById('requiredSkills').value.split(',').map(s => s.trim())
-            }};
-            
-            offerDetails = {{
-                position: document.getElementById('position').value,
-                company: document.getElementById('company').value,
-                industry: document.getElementById('industry').value,
-                job_level: 'Senior',
-                required_skills: document.getElementById('requiredSkills').value.split(',').map(s => s.trim()),
-                preferred_qualifications: ['Leadership', 'Mentoring'],
-                responsibilities: ['Lead features', 'Code review', 'Mentor team'],
-                salary_range: 'Competitive',
-                benefits: ['Health', 'Remote', 'Development'],
-                company_size: '500+',
-                culture_values: ['Innovation', 'Collaboration'],
-                location: 'Remote/Office'
-            }};
-            
-            fetch('/api/context/save', {{
-                method: 'POST',
-                headers: {{'Content-Type': 'application/json'}},
-                body: JSON.stringify({{
-                    session_id: sessionId,
-                    user_details: userDetails,
-                    offer_details: offerDetails
-                }})
-            }}).then(r => r.json()).then(d => {{
-                if (d.success) {{
-                    document.getElementById('contextStatus').innerHTML = 
-                        '✅ <strong>Context saved!</strong><br>' +
-                        '👤 ' + userDetails.name + ' | ' +
-                        '💼 ' + offerDetails.position + ' @ ' + offerDetails.company;
-                    document.getElementById('contextStatus').style.color = '#4caf50';
-                    document.getElementById('contextStatus').style.marginTop = '10px';
-                }} else {{
-                    document.getElementById('contextStatus').textContent = '❌ Error: ' + d.error;
-                    document.getElementById('contextStatus').style.color = '#f44336';
-                }}
-            }});
-        }}
-
-        function sendText() {{
-            const text = document.getElementById('userText').value.trim();
-            if (!text) return alert('Enter a message');
-            
-            const mode = document.querySelector('input[name="mode"]:checked').value;
-            
-            fetch('/api/text-chat', {{
-                method: 'POST',
-                headers: {{'Content-Type': 'application/json'}},
-                body: JSON.stringify({{
-                    text: text,
-                    session_id: sessionId,
-                    user_details: userDetails,
-                    offer_details: offerDetails,
-                    mode: mode
-                }})
-            }}).then(r => r.json()).then(d => {{
-                if (d.success) {{
-                    const modeLabel = mode === 'employer_interview' ? '👔 Employer' : '🧑‍🏫 Coach';
-                    document.getElementById('textResponseText').innerHTML = 
-                        '<strong>You:</strong> ' + text + '<br><br>' +
-                        '<strong>' + modeLabel + ':</strong><br>' + d.ai_response;
-                    document.getElementById('textResponseOutput').classList.add('show');
-                    document.getElementById('userText').value = '';
-                }} else {{
-                    alert('Error: ' + d.error);
-                }}
-            }});
-        }}
-
-        function testHealth() {{
-            fetch('/health').then(r => r.json()).then(d => {{
-                document.getElementById('connectionStatus').innerHTML = `
-                    <strong>✅ Backend Connected</strong><br>
-                    Active Keys: ${{d.total_keys}}<br>
-                    Total RPD: ${{d.total_rpd_capacity}}/day<br>
-                    Status: Active
-                `;
-            }}).catch(e => {{
-                document.getElementById('connectionStatus').innerHTML = '❌ Connection Failed';
-            }});
-        }}
-
-        function checkKeyUsage() {{
-            fetch('/api/key-usage').then(r => r.json()).then(d => {{
-                let html = '<table style="width:100%; border-collapse: collapse; margin-top: 15px;"><tr style="background:#f0f0f0;"><th style="border:1px solid #ddd; padding:12px; text-align:left;">Key</th><th style="border:1px solid #ddd; padding:12px;">Requests</th><th style="border:1px solid #ddd; padding:12px;">Success</th><th style="border:1px solid #ddd; padding:12px;">Rate</th></tr>';
-                for (const [key, stats] of Object.entries(d.usage_last_24h || {{}})) {{
-                    html += `<tr><td style="border:1px solid #ddd; padding:12px;">${{key.toUpperCase()}}</td><td style="border:1px solid #ddd; padding:12px;">${{stats.total_requests}}</td><td style="border:1px solid #ddd; padding:12px;">${{stats.successful}}</td><td style="border:1px solid #ddd; padding:12px;">${{stats.success_rate}}</td></tr>`;
-                }}
-                html += '</table>';
-                document.getElementById('statsOutput').innerHTML = html;
-            }});
-        }}
-    </script>
-</body>
-</html>
-"""
+    """Simple home page"""
+    return """
+    <html>
+    <head><title>Talleb 5edma - Interview Coach API</title></head>
+    <body style="font-family: Arial; margin: 40px;">
+        <h1>🎙️ Talleb 5edma - Interview Coaching API</h1>
+        <p>✅ API is running and ready to receive requests</p>
+        <h3>Endpoints:</h3>
+        <ul>
+            <li><strong>GET /health</strong> - Check API status</li>
+            <li><strong>POST /api/text-chat</strong> - Send text message</li>
+            <li><strong>POST /api/voice-chat</strong> - Send audio file</li>
+            <li><strong>POST /api/context/save</strong> - Save user context</li>
+        </ul>
+        <p><strong>Modes supported:</strong> coaching, employer_interview</p>
+    </body>
+    </html>
+    """
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
@@ -958,6 +577,5 @@ if __name__ == '__main__':
     print(f"🚀 Port: {port}")
     print(f"🔑 Active API Keys: {len(gemini_clients)}")
     print(f"📊 Total RPD Capacity: {len(gemini_clients) * 20}")
-    print(f"🧠 Modes: Coaching + Employer Interview")
-    print(f"💾 Database: {DATABASE_FILE}")
+    print(f"🧠 Features: Text Chat + Voice Chat + Employer Mode")
     app.run(host='0.0.0.0', port=port, debug=False)
