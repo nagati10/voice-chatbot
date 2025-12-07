@@ -2,4 +2,8 @@ Flask==3.1.0
 flask-cors==5.0.0
 google-genai==1.53.0
 gTTS==2.5.4
+SpeechRecognition==3.14.4
 gunicorn==23.0.0
+pydub==0.25.1
+ffmpeg-python==0.2.0
+langdetect==1.0.9
