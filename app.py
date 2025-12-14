@@ -50,6 +50,18 @@ def init_db():
                  (session_id TEXT, timestamp DATETIME, user_input TEXT, ai_response TEXT, language TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS key_usage
                  (key_name TEXT, timestamp DATETIME, endpoint TEXT, status TEXT)''')
+    # ========== INTERVIEW INVITATIONS TABLE ==========
+    c.execute('''CREATE TABLE IF NOT EXISTS interview_invitations
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  chat_id TEXT NOT NULL,
+                  from_user_id TEXT NOT NULL,
+                  to_user_id TEXT NOT NULL,
+                  from_user_name TEXT,
+                  offer_id TEXT,
+                  status TEXT DEFAULT 'pending',
+                  created_at DATETIME,
+                  responded_at DATETIME,
+                  UNIQUE(chat_id, from_user_id, to_user_id))''')
     conn.commit()
     conn.close()
 
@@ -118,6 +130,111 @@ def get_conversation_history(session_id, limit=10):
     except Exception as e:
         print(f"Database error: {e}")
         return []
+
+# ========== INTERVIEW INVITATION HELPERS ==========
+def save_interview_invitation(chat_id, from_user_id, to_user_id, from_user_name, offer_id):
+    """Save or update an interview invitation"""
+    try:
+        conn = sqlite3.connect(DATABASE_FILE)
+        c = conn.cursor()
+        
+        # Check if invitation already exists
+        c.execute('''SELECT id, status FROM interview_invitations 
+                     WHERE chat_id=? AND from_user_id=? AND to_user_id=?''',
+                  (chat_id, from_user_id, to_user_id))
+        existing = c.fetchone()
+        
+        if existing:
+            # Update existing invitation
+            c.execute('''UPDATE interview_invitations 
+                         SET status='pending', created_at=?, responded_at=NULL
+                         WHERE id=?''',
+                      (datetime.now(), existing[0]))
+        else:
+            # Insert new invitation
+            c.execute('''INSERT INTO interview_invitations 
+                         (chat_id, from_user_id, to_user_id, from_user_name, offer_id, status, created_at)
+                         VALUES (?, ?, ?, ?, ?, 'pending', ?)''',
+                      (chat_id, from_user_id, to_user_id, from_user_name, offer_id, datetime.now()))
+        
+        conn.commit()
+        invitation_id = existing[0] if existing else c.lastrowid
+        conn.close()
+        
+        return {"success": True, "invitation_id": invitation_id}
+    except Exception as e:
+        print(f"❌ Error saving invitation: {e}")
+        return {"success": False, "error": str(e)}
+
+def get_pending_invitations(user_id):
+    """Get all pending invitations for a user"""
+    try:
+        conn = sqlite3.connect(DATABASE_FILE)
+        c = conn.cursor()
+        c.execute('''SELECT id, chat_id, from_user_id, from_user_name, offer_id, created_at
+                     FROM interview_invitations 
+                     WHERE to_user_id=? AND status='pending'
+                     ORDER BY created_at DESC''',
+                  (user_id,))
+        invitations = c.fetchall()
+        conn.close()
+        
+        return [{
+            "invitation_id": inv[0],
+            "chat_id": inv[1],
+            "from_user_id": inv[2],
+            "from_user_name": inv[3],
+            "offer_id": inv[4],
+            "created_at": inv[5]
+        } for inv in invitations]
+    except Exception as e:
+        print(f"❌ Error getting invitations: {e}")
+        return []
+
+def update_invitation_status(invitation_id, status):
+    """Update invitation status (accepted/rejected)"""
+    try:
+        conn = sqlite3.connect(DATABASE_FILE)
+        c = conn.cursor()
+        c.execute('''UPDATE interview_invitations 
+                     SET status=?, responded_at=?
+                     WHERE id=?''',
+                  (status, datetime.now(), invitation_id))
+        conn.commit()
+        conn.close()
+        return {"success": True}
+    except Exception as e:
+        print(f"❌ Error updating invitation: {e}")
+        return {"success": False, "error": str(e)}
+
+def get_invitation_by_id(invitation_id):
+    """Get invitation details by ID"""
+    try:
+        conn = sqlite3.connect(DATABASE_FILE)
+        c = conn.cursor()
+        c.execute('''SELECT id, chat_id, from_user_id, to_user_id, from_user_name, 
+                            offer_id, status, created_at, responded_at
+                     FROM interview_invitations WHERE id=?''',
+                  (invitation_id,))
+        inv = c.fetchone()
+        conn.close()
+        
+        if inv:
+            return {
+                "invitation_id": inv[0],
+                "chat_id": inv[1],
+                "from_user_id": inv[2],
+                "to_user_id": inv[3],
+                "from_user_name": inv[4],
+                "offer_id": inv[5],
+                "status": inv[6],
+                "created_at": inv[7],
+                "responded_at": inv[8]
+            }
+        return None
+    except Exception as e:
+        print(f"❌ Error getting invitation: {e}")
+        return None
 
 # ========== SYSTEM PROMPT BUILDERS ==========
 def build_system_prompt(user_details, offer_details, chat_history):
@@ -1162,6 +1279,240 @@ def voice_chat():
             "error": f"Server error: {str(e)}"
         }), 500
 
+# ========== INTERVIEW INVITATION ENDPOINTS ==========
+@app.route('/api/send-interview-invitation', methods=['POST'])
+def send_interview_invitation():
+    """
+    Enterprise sends interview invitation to student
+    
+    Request body:
+    {
+        "chat_id": "chat123",
+        "from_user_id": "enterprise_user_id",
+        "to_user_id": "student_user_id",
+        "from_user_name": "Tech Corp",
+        "offer_id": "offer123"
+    }
+    """
+    try:
+        data = request.json
+        
+        chat_id = data.get('chat_id')
+        from_user_id = data.get('from_user_id')
+        to_user_id = data.get('to_user_id')
+        from_user_name = data.get('from_user_name', 'Company')
+        offer_id = data.get('offer_id')
+        
+        # Validate required fields
+        if not all([chat_id, from_user_id, to_user_id]):
+            return jsonify({
+                "success": False,
+                "error": "Missing required fields: chat_id, from_user_id, to_user_id"
+            }), 400
+        
+        print(f"📨 Interview Invitation: {from_user_name} → Student (Chat: {chat_id})")
+        
+        # Save invitation to database
+        result = save_interview_invitation(
+            chat_id=chat_id,
+            from_user_id=from_user_id,
+            to_user_id=to_user_id,
+            from_user_name=from_user_name,
+            offer_id=offer_id
+        )
+        
+        if result["success"]:
+            return jsonify({
+                "success": True,
+                "message": "Interview invitation sent successfully",
+                "invitation_id": result["invitation_id"],
+                "chat_id": chat_id,
+                "status": "pending"
+            })
+        else:
+            return jsonify({
+                "success": False,
+                "error": result["error"]
+            }), 500
+            
+    except Exception as e:
+        print(f"❌ Send Invitation Error: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            "success": False,
+            "error": f"Server error: {str(e)}"
+        }), 500
+
+@app.route('/api/get-pending-invitations/<user_id>', methods=['GET'])
+def get_user_pending_invitations(user_id):
+    """
+    Get all pending interview invitations for a user
+    
+    Response:
+    {
+        "success": true,
+        "invitations": [
+            {
+                "invitation_id": 1,
+                "chat_id": "chat123",
+                "from_user_id": "enterprise123",
+                "from_user_name": "Tech Corp",
+                "offer_id": "offer123",
+                "created_at": "2024-01-01 10:00:00"
+            }
+        ],
+        "count": 1
+    }
+    """
+    try:
+        print(f"📬 Getting pending invitations for user: {user_id}")
+        
+        invitations = get_pending_invitations(user_id)
+        
+        return jsonify({
+            "success": True,
+            "invitations": invitations,
+            "count": len(invitations)
+        })
+        
+    except Exception as e:
+        print(f"❌ Get Invitations Error: {e}")
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+@app.route('/api/accept-interview-invitation', methods=['POST'])
+def accept_interview_invitation():
+    """
+    Student accepts interview invitation
+    
+    Request body:
+    {
+        "invitation_id": 1
+    }
+    
+    Response:
+    {
+        "success": true,
+        "message": "Interview accepted",
+        "invitation": {
+            "chat_id": "chat123",
+            "from_user_id": "enterprise123",
+            "from_user_name": "Tech Corp"
+        }
+    }
+    """
+    try:
+        data = request.json
+        invitation_id = data.get('invitation_id')
+        
+        if not invitation_id:
+            return jsonify({
+                "success": False,
+                "error": "Missing invitation_id"
+            }), 400
+        
+        print(f"✅ Accepting invitation: {invitation_id}")
+        
+        # Get invitation details before updating
+        invitation = get_invitation_by_id(invitation_id)
+        
+        if not invitation:
+            return jsonify({
+                "success": False,
+                "error": "Invitation not found"
+            }), 404
+        
+        if invitation["status"] != "pending":
+            return jsonify({
+                "success": False,
+                "error": f"Invitation already {invitation['status']}"
+            }), 400
+        
+        # Update status to accepted
+        result = update_invitation_status(invitation_id, "accepted")
+        
+        if result["success"]:
+            return jsonify({
+                "success": True,
+                "message": "Interview invitation accepted",
+                "invitation": {
+                    "invitation_id": invitation_id,
+                    "chat_id": invitation["chat_id"],
+                    "from_user_id": invitation["from_user_id"],
+                    "from_user_name": invitation["from_user_name"],
+                    "offer_id": invitation["offer_id"]
+                }
+            })
+        else:
+            return jsonify({
+                "success": False,
+                "error": result["error"]
+            }), 500
+            
+    except Exception as e:
+        print(f"❌ Accept Invitation Error: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+@app.route('/api/reject-interview-invitation', methods=['POST'])
+def reject_interview_invitation():
+    """
+    Student rejects interview invitation
+    
+    Request body:
+    {
+        "invitation_id": 1
+    }
+    """
+    try:
+        data = request.json
+        invitation_id = data.get('invitation_id')
+        
+        if not invitation_id:
+            return jsonify({
+                "success": False,
+                "error": "Missing invitation_id"
+            }), 400
+        
+        print(f"❌ Rejecting invitation: {invitation_id}")
+        
+        # Get invitation details to verify it exists
+        invitation = get_invitation_by_id(invitation_id)
+        
+        if not invitation:
+            return jsonify({
+                "success": False,
+                "error": "Invitation not found"
+            }), 404
+        
+        # Update status to rejected
+        result = update_invitation_status(invitation_id, "rejected")
+        
+        if result["success"]:
+            return jsonify({
+                "success": True,
+                "message": "Interview invitation rejected"
+            })
+        else:
+            return jsonify({
+                "success": False,
+                "error": result["error"]
+            }), 500
+            
+    except Exception as e:
+        print(f"❌ Reject Invitation Error: {e}")
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
 @app.route('/api/quota-status', methods=['GET'])
 def quota_status():
     status = {}
@@ -1195,7 +1546,16 @@ def health():
     return jsonify({
         "status": "active",
         "keys": len(gemini_clients),
-        "endpoints": ["/", "/api/text-chat", "/api/voice-chat", "/api/quota-status"]
+        "endpoints": [
+            "/", 
+            "/api/text-chat", 
+            "/api/voice-chat", 
+            "/api/quota-status",
+            "/api/send-interview-invitation",
+            "/api/get-pending-invitations/<user_id>",
+            "/api/accept-interview-invitation",
+            "/api/reject-interview-invitation"
+        ]
     })
 
 if __name__ == '__main__':
@@ -1204,5 +1564,5 @@ if __name__ == '__main__':
     print(f"🚀 Port: {port}")
     print(f"🔑 Active Keys: {len(gemini_clients)}")
     print(f"📍 URL: https://voice-chatbot-k3fe.onrender.com")
-    print(f"🧠 Features: Text + Voice Chat + Conversation Memory + Multi-Key Fallback")
+    print(f"🧠 Features: Text + Voice Chat + Conversation Memory + Multi-Key Fallback + Interview Invitations")
     app.run(host='0.0.0.0', port=port, debug=False)
