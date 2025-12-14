@@ -12,11 +12,21 @@ from google.genai import types
 from gtts import gTTS
 import random
 
+# ========== GEVENT MONKEY PATCH (Must be first!) ==========
+from gevent import monkey
+monkey.patch_all()
+
 app = Flask(__name__)
 CORS(app)
 
 # ========== WEBSOCKET SETUP ==========
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
+socketio = SocketIO(
+    app, 
+    cors_allowed_origins="*", 
+    async_mode='gevent',
+    ping_timeout=60,
+    ping_interval=25
+)
 
 # Track connected users
 connected_users = {}  # {user_id: session_id}
@@ -85,7 +95,6 @@ def handle_connect():
 @socketio.on('disconnect')
 def handle_disconnect():
     """Client disconnects"""
-    # Remove user from tracking
     user_id = None
     for uid, sid in list(connected_users.items()):
         if sid == request.sid:
@@ -111,10 +120,7 @@ def on_join(data):
         emit('error', {'message': 'userId required'})
         return
     
-    # Join room named user_{user_id}
     join_room(f"user_{user_id}")
-    
-    # Track connection
     connected_users[user_id] = request.sid
     
     print(f"✅ User {user_id} joined room user_{user_id}")
@@ -210,20 +216,17 @@ def save_interview_invitation(chat_id, from_user_id, to_user_id, from_user_name,
         conn = sqlite3.connect(DATABASE_FILE)
         c = conn.cursor()
         
-        # Check if invitation already exists
         c.execute('''SELECT id, status FROM interview_invitations 
                      WHERE chat_id=? AND from_user_id=? AND to_user_id=?''',
                   (chat_id, from_user_id, to_user_id))
         existing = c.fetchone()
         
         if existing:
-            # Update existing invitation
             c.execute('''UPDATE interview_invitations 
                          SET status='pending', created_at=?, responded_at=NULL
                          WHERE id=?''',
                       (datetime.now(), existing[0]))
         else:
-            # Insert new invitation
             c.execute('''INSERT INTO interview_invitations 
                          (chat_id, from_user_id, to_user_id, from_user_name, offer_id, status, created_at)
                          VALUES (?, ?, ?, ?, ?, 'pending', ?)''',
@@ -404,7 +407,6 @@ def transcribe_with_gemini(audio_bytes, mime_type="audio/webm"):
     if not gemini_clients:
         return "Speech-to-text service not configured.", "en"
     
-    # Try each key
     available_keys = list(gemini_clients.keys())
     random.shuffle(available_keys)
     
@@ -446,7 +448,6 @@ Detect the language and return ONLY a valid JSON response:
         except Exception as e:
             error_msg = str(e)
             
-            # If quota exceeded, try next key
             if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg or "quota" in error_msg.lower():
                 print(f"⚠️ {key_name.upper()} quota exceeded, trying next key...")
                 continue
@@ -454,14 +455,12 @@ Detect the language and return ONLY a valid JSON response:
                 print(f"❌ {key_name.upper()} error: {e}")
                 continue
     
-    # If all keys failed
     return "❌ All API keys have hit their quota. STT unavailable.", "en"
 
 def get_ai_response(text, user_details, offer_details, chat_history, mode, language):
     if not gemini_clients:
         return "AI service not configured."
     
-    # Try each key - skip ones that hit quota
     available_keys = list(gemini_clients.keys())
     random.shuffle(available_keys)
     
@@ -498,7 +497,6 @@ def get_ai_response(text, user_details, offer_details, chat_history, mode, langu
         except Exception as e:
             error_msg = str(e)
             
-            # If quota exceeded, try next key
             if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg or "quota" in error_msg.lower():
                 print(f"⚠️ {key_name.upper()} quota exceeded, trying next key...")
                 continue
@@ -506,7 +504,6 @@ def get_ai_response(text, user_details, offer_details, chat_history, mode, langu
                 print(f"❌ {key_name.upper()} error: {e}")
                 continue
     
-    # If all keys failed
     return "❌ All API keys have hit their quota. Please try again in a few hours or upgrade to a paid plan."
 
 def text_to_speech(text, language='en'):
@@ -929,6 +926,7 @@ def health():
         "keys": len(gemini_clients),
         "websocket_enabled": True,
         "connected_users": len(connected_users),
+        "async_mode": "gevent",
         "endpoints": [
             "/",
             "/api/text-chat",
@@ -948,5 +946,5 @@ if __name__ == '__main__':
     print(f"🚀 Port: {port}")
     print(f"🔑 Active Keys: {len(gemini_clients)}")
     print(f"📍 URL: https://voice-chatbot-k3fe.onrender.com")
-    print(f"🧠 Features: Text + Voice Chat + Conversation Memory + Multi-Key Fallback + Interview Invitations + WebSocket")
+    print(f"🧠 Features: Text + Voice Chat + Conversation Memory + Multi-Key Fallback + Interview Invitations + WebSocket (Gevent)")
     socketio.run(app, host='0.0.0.0', port=port, debug=False)

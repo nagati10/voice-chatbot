@@ -8,7 +8,7 @@ services:
   buildCommand: |
     pip install --upgrade pip
     pip install -r requirements.txt
-  startCommand: gunicorn app:app --worker-class eventlet -w 1 --timeout 240 --log-level debug
+  startCommand: gunicorn app:app --worker-class gevent --worker-connections 1000 -w 1 --timeout 240 --log-level debug
   envVars:
     - key: GEMINI_KEY1
       sync: false
