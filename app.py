@@ -4,7 +4,7 @@ import base64
 from datetime import datetime
 import sqlite3
 import json
-from flask import Flask, request, jsonify, render_template_string
+from flask import Flask, request, jsonify
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit, join_room, leave_room
 from google import genai
@@ -12,20 +12,18 @@ from google.genai import types
 from gtts import gTTS
 import random
 
-# ========== GEVENT MONKEY PATCH (Must be first!) ==========
-from gevent import monkey
-monkey.patch_all()
-
 app = Flask(__name__)
 CORS(app)
 
-# ========== WEBSOCKET SETUP ==========
+# ========== WEBSOCKET SETUP (No monkey patching needed for production) ==========
 socketio = SocketIO(
-    app, 
-    cors_allowed_origins="*", 
-    async_mode='gevent',
+    app,
+    cors_allowed_origins="*",
+    async_mode='threading',  # Use threading instead of gevent for production
     ping_timeout=60,
-    ping_interval=25
+    ping_interval=25,
+    engineio_logger=False,
+    socketio_logger=False
 )
 
 # Track connected users
@@ -67,7 +65,6 @@ def init_db():
                  (session_id TEXT, timestamp DATETIME, user_input TEXT, ai_response TEXT, language TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS key_usage
                  (key_name TEXT, timestamp DATETIME, endpoint TEXT, status TEXT)''')
-    # ========== INTERVIEW INVITATIONS TABLE ==========
     c.execute('''CREATE TABLE IF NOT EXISTS interview_invitations
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   chat_id TEXT NOT NULL,
@@ -108,13 +105,7 @@ def handle_disconnect():
 
 @socketio.on('join')
 def on_join(data):
-    """
-    User joins their personal room to receive notifications
-    
-    Expected data: {
-        "userId": "student_123"
-    }
-    """
+    """User joins their personal room to receive notifications"""
     user_id = data.get('userId')
     if not user_id:
         emit('error', {'message': 'userId required'})
@@ -142,7 +133,7 @@ def on_leave(data):
 
 @socketio.on('ping')
 def on_ping():
-    """Heartbeat - keep connection alive"""
+    """Heartbeat"""
     emit('pong')
 
 # ========== HELPER FUNCTIONS ==========
@@ -383,26 +374,19 @@ INTERVIEW GUIDELINES:
 4. Ask technical & behavioral questions
 5. React naturally to their answers
 6. Make it feel like a REAL interview
-7. Focus on assessing fit for THIS specific role
-
-IMPORTANT:
-- Be professional but approachable
-- Ask open-ended questions
-- Don't give away answers
-- Remember everything they said
-- React to previous answers"""
+7. Focus on assessing fit for THIS specific role"""
 
     if chat_history:
         prompt += f"""
 
-CONVERSATION HISTORY (Remember this context):
+CONVERSATION HISTORY:
 """
         for user_msg, ai_msg in chat_history[-5:]:
-            prompt += f"Candidate: {user_msg}\nYou (Interviewer): {ai_msg}\n"
+            prompt += f"Candidate: {user_msg}\nYou: {ai_msg}\n"
 
     return prompt
 
-# ========== AI FUNCTIONS WITH QUOTA AWARENESS ==========
+# ========== AI FUNCTIONS ==========
 def transcribe_with_gemini(audio_bytes, mime_type="audio/webm"):
     if not gemini_clients:
         return "Speech-to-text service not configured.", "en"
@@ -413,7 +397,6 @@ def transcribe_with_gemini(audio_bytes, mime_type="audio/webm"):
     for key_name in available_keys:
         try:
             client = gemini_clients[key_name]
-            
             print(f"🎤 Transcribing with {key_name.upper()}...")
             
             prompt = """Listen to this audio and transcribe the speech to text.
@@ -423,14 +406,10 @@ Detect the language and return ONLY a valid JSON response:
             response = client.models.generate_content(
                 model="gemini-2.5-flash",
                 contents=[prompt, types.Part.from_bytes(data=audio_bytes, mime_type=mime_type)],
-                config=types.GenerateContentConfig(
-                    temperature=0.1,
-                    max_output_tokens=2048,
-                )
+                config=types.GenerateContentConfig(temperature=0.1, max_output_tokens=2048)
             )
             
             result_text = response.text.strip() if hasattr(response, 'text') else ""
-            
             if "json" in result_text.lower() and '`' in result_text:
                 result_text = result_text.replace('```json', '').replace('```', '').strip()
             
@@ -440,22 +419,20 @@ Detect the language and return ONLY a valid JSON response:
                 language = result.get("language", "en")
                 if not text:
                     return "Could not hear that clearly. Please repeat.", "en"
-                print(f"✅ Transcribed with {key_name.upper()}: {text}")
+                print(f"✅ Transcribed: {text}")
                 return text, language
             except:
                 return "Could not understand audio.", "en"
                 
         except Exception as e:
-            error_msg = str(e)
-            
-            if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg or "quota" in error_msg.lower():
-                print(f"⚠️ {key_name.upper()} quota exceeded, trying next key...")
+            if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e) or "quota" in str(e).lower():
+                print(f"⚠️ {key_name.upper()} quota exceeded")
                 continue
             else:
                 print(f"❌ {key_name.upper()} error: {e}")
                 continue
     
-    return "❌ All API keys have hit their quota. STT unavailable.", "en"
+    return "❌ All API keys have hit their quota.", "en"
 
 def get_ai_response(text, user_details, offer_details, chat_history, mode, language):
     if not gemini_clients:
@@ -474,48 +451,39 @@ def get_ai_response(text, user_details, offer_details, chat_history, mode, langu
                 system_prompt = build_system_prompt(user_details, offer_details, chat_history)
             
             full_prompt = f"{system_prompt}\n\n--- CURRENT MESSAGE ---\n{text}"
-            
             print(f"📤 Trying {key_name.upper()}...")
             
             response = client.models.generate_content(
                 model="gemini-2.5-flash",
                 contents=full_prompt,
-                config=types.GenerateContentConfig(
-                    temperature=0.7,
-                    max_output_tokens=2048,
-                )
+                config=types.GenerateContentConfig(temperature=0.7, max_output_tokens=2048)
             )
             
             ai_text = response.text.strip() if hasattr(response, 'text') else ""
-            
             if ai_text:
-                print(f"✅ Response from {key_name.upper()}: {ai_text[:80]}...")
+                print(f"✅ Response from {key_name.upper()}")
                 return ai_text
             else:
                 return "Sorry, I couldn't generate a response."
                 
         except Exception as e:
-            error_msg = str(e)
-            
-            if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg or "quota" in error_msg.lower():
-                print(f"⚠️ {key_name.upper()} quota exceeded, trying next key...")
+            if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e) or "quota" in str(e).lower():
+                print(f"⚠️ {key_name.upper()} quota exceeded")
                 continue
             else:
                 print(f"❌ {key_name.upper()} error: {e}")
                 continue
     
-    return "❌ All API keys have hit their quota. Please try again in a few hours or upgrade to a paid plan."
+    return "❌ All API keys have hit their quota."
 
 def text_to_speech(text, language='en'):
     try:
         tts_lang = LANGUAGE_MAPPING.get(language, 'en')
         tts = gTTS(text=text, lang=tts_lang, slow=False)
-        
         audio_buffer = io.BytesIO()
         tts.write_to_fp(audio_buffer)
         audio_buffer.seek(0)
         audio_bytes = audio_buffer.read()
-        
         print(f"✅ Generated TTS: {len(audio_bytes)} bytes")
         return base64.b64encode(audio_bytes).decode('utf-8')
     except Exception as e:
@@ -529,7 +497,8 @@ def index():
         "status": "active",
         "message": "Talleb 5edma - Interview Coaching API",
         "features": ["text-chat", "voice-chat", "interview-invitations", "websocket"],
-        "websocket_enabled": True
+        "websocket_enabled": True,
+        "async_mode": "threading"
     })
 
 @app.route('/api/text-chat', methods=['POST'])
@@ -547,11 +516,8 @@ def text_chat():
             return jsonify({"success": False, "error": "No text provided"}), 400
         
         print(f"💬 {mode}: {text}")
-        
         language = detect_language_from_text(text)
-        
         ai_response = get_ai_response(text, user_details, offer_details, chat_history, mode, language)
-        
         save_conversation(session_id, text, ai_response, language)
         
         return jsonify({
@@ -564,88 +530,40 @@ def text_chat():
         
     except Exception as e:
         print(f"❌ Error: {e}")
-        import traceback
-        traceback.print_exc()
         return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/api/voice-chat', methods=['POST'])
 def voice_chat():
     try:
-        print(f"📨 Voice Chat Request:")
-        print(f"  Files: {list(request.files.keys())}")
-        print(f"  Form data: {list(request.form.keys())}")
-        
         if 'audio' not in request.files:
-            print(f"❌ No audio file in request")
-            return jsonify({
-                "success": False,
-                "error": "No audio file. Make sure microphone permission is granted."
-            }), 400
+            return jsonify({"success": False, "error": "No audio file"}), 400
         
         audio_file = request.files['audio']
-        
         if not audio_file or audio_file.filename == '':
-            print(f"❌ Audio file is empty")
-            return jsonify({
-                "success": False,
-                "error": "Audio file is empty. Try recording again."
-            }), 400
+            return jsonify({"success": False, "error": "Audio file is empty"}), 400
         
         audio_bytes = audio_file.read()
-        print(f"📦 Audio size: {len(audio_bytes)} bytes")
-        
         if len(audio_bytes) < 500:
-            print(f"❌ Audio too short ({len(audio_bytes)} bytes)")
-            return jsonify({
-                "success": False,
-                "error": f"Audio too short. Please record for at least 1 second. (Received: {len(audio_bytes)} bytes)"
-            }), 400
+            return jsonify({"success": False, "error": "Audio too short"}), 400
         
         session_id = request.form.get('session_id', 'default')
         mode = request.form.get('mode', 'coaching')
         
-        print(f"🎙️ Session: {session_id}, Mode: {mode}")
-        
         try:
-            user_details_str = request.form.get('user_details', '{}')
-            offer_details_str = request.form.get('offer_details', '{}')
-            print(f"  User details: {user_details_str[:50]}...")
-            print(f"  Offer details: {offer_details_str[:50]}...")
-            user_details = json.loads(user_details_str)
-            offer_details = json.loads(offer_details_str)
-        except json.JSONDecodeError as je:
-            print(f"❌ Invalid JSON in form data: {je}")
-            return jsonify({
-                "success": False,
-                "error": f"Invalid user/offer details format: {str(je)}"
-            }), 400
+            user_details = json.loads(request.form.get('user_details', '{}'))
+            offer_details = json.loads(request.form.get('offer_details', '{}'))
+        except json.JSONDecodeError:
+            return jsonify({"success": False, "error": "Invalid JSON"}), 400
         
-        print(f"✅ Request validated successfully")
-        
-        print(f"🎤 Starting transcription...")
         transcribed_text, detected_language = transcribe_with_gemini(audio_bytes, "audio/webm")
-        print(f"📝 Result: {transcribed_text}")
+        if "error" in transcribed_text.lower():
+            return jsonify({"success": False, "error": transcribed_text}), 400
         
-        if "error" in transcribed_text.lower() or "could" in transcribed_text.lower() or "quota" in transcribed_text.lower():
-            print(f"⚠️ Transcription failed: {transcribed_text}")
-            return jsonify({
-                "success": False,
-                "error": transcribed_text
-            }), 400
-        
-        print(f"📖 Fetching conversation history...")
         chat_history = get_conversation_history(session_id)
-        print(f"  Retrieved {len(chat_history)} previous messages")
-        
-        print(f"🤖 Generating AI response...")
         ai_response = get_ai_response(transcribed_text, user_details, offer_details, chat_history, mode, detected_language)
-        print(f"💬 AI: {ai_response[:80]}...")
-        
         save_conversation(session_id, transcribed_text, ai_response, detected_language)
         
-        print(f"🔊 Generating audio response...")
         audio_response = text_to_speech(ai_response, detected_language)
-        print(f"✅ TTS generated: {len(audio_response) if audio_response else 0} chars")
         
         return jsonify({
             "success": True,
@@ -658,25 +576,13 @@ def voice_chat():
         
     except Exception as e:
         print(f"❌ Voice Chat Error: {e}")
-        import traceback
-        error_trace = traceback.format_exc()
-        print(error_trace)
-        return jsonify({
-            "success": False,
-            "error": f"Server error: {str(e)}"
-        }), 500
+        return jsonify({"success": False, "error": str(e)}), 500
 
 # ========== INTERVIEW INVITATION ENDPOINTS ==========
 @app.route('/api/send-interview-invitation', methods=['POST'])
 def send_interview_invitation():
-    """
-    Enterprise sends interview invitation to student
-    
-    Sends both HTTP response AND WebSocket notification
-    """
     try:
         data = request.json
-        
         chat_id = data.get('chat_id')
         from_user_id = data.get('from_user_id')
         to_user_id = data.get('to_user_id')
@@ -684,28 +590,17 @@ def send_interview_invitation():
         offer_id = data.get('offer_id')
         
         if not all([chat_id, from_user_id, to_user_id]):
-            return jsonify({
-                "success": False,
-                "error": "Missing required fields: chat_id, from_user_id, to_user_id"
-            }), 400
+            return jsonify({"success": False, "error": "Missing required fields"}), 400
         
-        print(f"📨 Interview Invitation: {from_user_name} → Student (Chat: {chat_id})")
+        print(f"📨 Interview Invitation: {from_user_name} → Student")
         
-        result = save_interview_invitation(
-            chat_id=chat_id,
-            from_user_id=from_user_id,
-            to_user_id=to_user_id,
-            from_user_name=from_user_name,
-            offer_id=offer_id
-        )
+        result = save_interview_invitation(chat_id, from_user_id, to_user_id, from_user_name, offer_id)
         
         if result["success"]:
             invitation_id = result["invitation_id"]
-            
-            # Get full invitation details
             invitation = get_invitation_by_id(invitation_id)
             
-            # ✨ EMIT WEBSOCKET EVENT TO RECIPIENT ✨
+            # ✨ EMIT WEBSOCKET EVENT
             socketio.emit('invitation_received', {
                 'invitation_id': invitation_id,
                 'chat_id': chat_id,
@@ -716,172 +611,92 @@ def send_interview_invitation():
                 'status': 'pending'
             }, room=f"user_{to_user_id}")
             
-            print(f"📤 WebSocket: Sent invitation event to user_{to_user_id}")
+            print(f"📤 WebSocket: Sent to user_{to_user_id}")
             
             return jsonify({
                 "success": True,
-                "message": "Interview invitation sent successfully",
+                "message": "Interview invitation sent",
                 "invitation_id": invitation_id,
-                "chat_id": chat_id,
-                "status": "pending",
                 "websocket_notified": True
             })
         else:
-            return jsonify({
-                "success": False,
-                "error": result["error"]
-            }), 500
+            return jsonify({"success": False, "error": result["error"]}), 500
             
     except Exception as e:
         print(f"❌ Send Invitation Error: {e}")
-        import traceback
-        traceback.print_exc()
-        return jsonify({
-            "success": False,
-            "error": f"Server error: {str(e)}"
-        }), 500
+        return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/api/get-pending-invitations/<user_id>', methods=['GET'])
 def get_user_pending_invitations(user_id):
-    """Get all pending interview invitations for a user (HTTP fallback)"""
     try:
-        print(f"📬 Getting pending invitations for user: {user_id}")
-        
         invitations = get_pending_invitations(user_id)
-        
-        return jsonify({
-            "success": True,
-            "invitations": invitations,
-            "count": len(invitations)
-        })
-        
+        return jsonify({"success": True, "invitations": invitations, "count": len(invitations)})
     except Exception as e:
-        print(f"❌ Get Invitations Error: {e}")
-        return jsonify({
-            "success": False,
-            "error": str(e)
-        }), 500
+        return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/api/accept-interview-invitation', methods=['POST'])
 def accept_interview_invitation():
-    """Student accepts interview invitation"""
     try:
         data = request.json
         invitation_id = data.get('invitation_id')
         
         if not invitation_id:
-            return jsonify({
-                "success": False,
-                "error": "Missing invitation_id"
-            }), 400
-        
-        print(f"✅ Accepting invitation: {invitation_id}")
+            return jsonify({"success": False, "error": "Missing invitation_id"}), 400
         
         invitation = get_invitation_by_id(invitation_id)
-        
         if not invitation:
-            return jsonify({
-                "success": False,
-                "error": "Invitation not found"
-            }), 404
+            return jsonify({"success": False, "error": "Invitation not found"}), 404
         
         if invitation["status"] != "pending":
-            return jsonify({
-                "success": False,
-                "error": f"Invitation already {invitation['status']}"
-            }), 400
+            return jsonify({"success": False, "error": f"Already {invitation['status']}"}), 400
         
         result = update_invitation_status(invitation_id, "accepted")
         
         if result["success"]:
-            # Emit WebSocket event to enterprise
             socketio.emit('invitation_accepted', {
                 'invitation_id': invitation_id,
                 'from_user_id': invitation['from_user_id'],
-                'to_user_id': invitation['to_user_id'],
-                'accepted_at': str(datetime.now())
+                'to_user_id': invitation['to_user_id']
             }, room=f"user_{invitation['from_user_id']}")
             
-            return jsonify({
-                "success": True,
-                "message": "Interview invitation accepted",
-                "invitation": {
-                    "invitation_id": invitation_id,
-                    "chat_id": invitation["chat_id"],
-                    "from_user_id": invitation["from_user_id"],
-                    "from_user_name": invitation["from_user_name"],
-                    "offer_id": invitation["offer_id"]
-                }
-            })
+            return jsonify({"success": True, "message": "Invitation accepted", "invitation": invitation})
         else:
-            return jsonify({
-                "success": False,
-                "error": result["error"]
-            }), 500
+            return jsonify({"success": False, "error": result["error"]}), 500
             
     except Exception as e:
-        print(f"❌ Accept Invitation Error: {e}")
-        import traceback
-        traceback.print_exc()
-        return jsonify({
-            "success": False,
-            "error": str(e)
-        }), 500
+        print(f"❌ Accept Error: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/api/reject-interview-invitation', methods=['POST'])
 def reject_interview_invitation():
-    """Student rejects interview invitation"""
     try:
         data = request.json
         invitation_id = data.get('invitation_id')
         
         if not invitation_id:
-            return jsonify({
-                "success": False,
-                "error": "Missing invitation_id"
-            }), 400
-        
-        print(f"❌ Rejecting invitation: {invitation_id}")
+            return jsonify({"success": False, "error": "Missing invitation_id"}), 400
         
         invitation = get_invitation_by_id(invitation_id)
-        
         if not invitation:
-            return jsonify({
-                "success": False,
-                "error": "Invitation not found"
-            }), 404
+            return jsonify({"success": False, "error": "Invitation not found"}), 404
         
         result = update_invitation_status(invitation_id, "rejected")
         
         if result["success"]:
-            # Emit WebSocket event to enterprise
             socketio.emit('invitation_rejected', {
                 'invitation_id': invitation_id,
-                'from_user_id': invitation['from_user_id'],
-                'to_user_id': invitation['to_user_id'],
-                'rejected_at': str(datetime.now())
+                'from_user_id': invitation['from_user_id']
             }, room=f"user_{invitation['from_user_id']}")
             
-            return jsonify({
-                "success": True,
-                "message": "Interview invitation rejected"
-            })
+            return jsonify({"success": True, "message": "Invitation rejected"})
         else:
-            return jsonify({
-                "success": False,
-                "error": result["error"]
-            }), 500
+            return jsonify({"success": False, "error": result["error"]}), 500
             
     except Exception as e:
-        print(f"❌ Reject Invitation Error: {e}")
-        return jsonify({
-            "success": False,
-            "error": str(e)
-        }), 500
+        return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/api/quota-status', methods=['GET'])
 def quota_status():
-    """Check API quota status"""
     status = {}
     for key_name in gemini_clients.keys():
         try:
@@ -889,17 +704,11 @@ def quota_status():
             response = client.models.generate_content(
                 model="gemini-2.5-flash",
                 contents="ping",
-                config=types.GenerateContentConfig(
-                    temperature=0.1,
-                    max_output_tokens=10,
-                )
+                config=types.GenerateContentConfig(temperature=0.1, max_output_tokens=10)
             )
             status[key_name] = "✅ Available"
         except Exception as e:
-            if "quota" in str(e).lower() or "429" in str(e):
-                status[key_name] = "❌ Quota Exceeded"
-            else:
-                status[key_name] = f"⚠️ {str(e)[:50]}"
+            status[key_name] = "❌ Quota Exceeded" if "quota" in str(e).lower() else f"⚠️ Error"
     
     return jsonify({
         "timestamp": datetime.now().isoformat(),
@@ -910,7 +719,6 @@ def quota_status():
 
 @app.route('/api/ws-status', methods=['GET'])
 def ws_status():
-    """WebSocket status endpoint"""
     return jsonify({
         "websocket_enabled": True,
         "connected_users": len(connected_users),
@@ -920,24 +728,12 @@ def ws_status():
 
 @app.route('/health', methods=['GET'])
 def health():
-    """Health check endpoint"""
     return jsonify({
         "status": "active",
-        "keys": len(gemini_clients),
         "websocket_enabled": True,
+        "async_mode": "threading",
         "connected_users": len(connected_users),
-        "async_mode": "gevent",
-        "endpoints": [
-            "/",
-            "/api/text-chat",
-            "/api/voice-chat",
-            "/api/quota-status",
-            "/api/ws-status",
-            "/api/send-interview-invitation",
-            "/api/get-pending-invitations/<user_id>",
-            "/api/accept-interview-invitation",
-            "/api/reject-interview-invitation"
-        ]
+        "keys_configured": len(gemini_clients)
     })
 
 if __name__ == '__main__':
@@ -945,6 +741,5 @@ if __name__ == '__main__':
     print(f"🚀 Starting Talleb 5edma - Interview Coaching")
     print(f"🚀 Port: {port}")
     print(f"🔑 Active Keys: {len(gemini_clients)}")
-    print(f"📍 URL: https://voice-chatbot-k3fe.onrender.com")
-    print(f"🧠 Features: Text + Voice Chat + Conversation Memory + Multi-Key Fallback + Interview Invitations + WebSocket (Gevent)")
-    socketio.run(app, host='0.0.0.0', port=port, debug=False)
+    print(f"🧠 Features: Text + Voice Chat + WebSocket + Interview Invitations")
+    socketio.run(app, host='0.0.0.0', port=port, debug=False, allow_unsafe_werkzeug=True)

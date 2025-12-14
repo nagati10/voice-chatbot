@@ -1,27 +1,37 @@
 services:
-- type: web
-  name: talleb-5edma-coaching
-  env: python
-  region: oregon
-  plan: free
-  runtime: python-3.11
-  buildCommand: |
-    pip install --upgrade pip
-    pip install -r requirements.txt
-  startCommand: gunicorn app:app --worker-class gevent --worker-connections 1000 -w 1 --timeout 240 --log-level debug
-  envVars:
-    - key: GEMINI_KEY1
-      sync: false
-    - key: GEMINI_KEY2
-      sync: false
-    - key: GEMINI_KEY3
-      sync: false
-    - key: GEMINI_KEY4
-      sync: false
-    - key: GEMINI_KEY5
-      sync: false
-    - key: PYTHONUNBUFFERED
-      value: "1"
-    - key: PORT
-      value: "10000"
-  autoDeploy: true
+  - type: web
+    name: talleb-5edma-coaching
+    env: python
+    region: oregon
+    plan: free
+    runtime: python-3.11
+    
+    buildCommand: |
+      pip install --upgrade pip
+      pip install -r requirements.txt
+    
+    startCommand: gunicorn app:app --timeout 240 --workers 1 --log-level debug
+    
+    envVars:
+      - key: GEMINI_KEY1
+        sync: false
+      
+      - key: GEMINI_KEY2
+        sync: false
+      
+      - key: GEMINI_KEY3
+        sync: false
+      
+      - key: GEMINI_KEY4
+        sync: false
+      
+      - key: GEMINI_KEY5
+        sync: false
+      
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      
+      - key: PORT
+        value: "10000"
+    
+    autoDeploy: true
