@@ -1,7 +1,7 @@
 Flask==3.1.0
-flask-cors==5.0.0
-flask-socketio==5.4.0
+flask-cors==6.0.0
+flask-socketio==5.5.1
 python-socketio==5.15.0
 python-engineio==4.12.3
-google-genai==1.53.0
+google-genai==1.55.0
 gTTS==2.5.4
