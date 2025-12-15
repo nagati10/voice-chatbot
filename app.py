@@ -867,18 +867,28 @@ def analyze_interview():
     }
     """
     try:
+        print("=" * 80)
+        print("🔍 INTERVIEW_ANALYSIS: Endpoint called")
+        print("=" * 80)
+        
         data = request.json
+        print(f"📥 INTERVIEW_ANALYSIS: Request data keys: {list(data.keys()) if data else 'None'}")
+        
         session_id = data.get('session_id')
         chat_id = data.get('chat_id')
         user_details = data.get('user_details', {})
         offer_details = data.get('offer_details', {})
         duration_seconds = data.get('duration_seconds', 600)
-
+        print(f"📊 INTERVIEW_ANALYSIS: session_id={session_id}")
+        print(f"📊 INTERVIEW_ANALYSIS: chat_id={chat_id}")
+        print(f"📊 INTER VIEW_ANALYSIS: user_name={user_details.get('name', 'N/A')}")
+        print(f"📊 INTERVIEW_ANALYSIS: position={offer_details.get('position', 'N/A')}")
+        print(f"📊 INTERVIEW_ANALYSIS: duration={duration_seconds}s")
         if not session_id or not chat_id:
+            print("❌ INTERVIEW_ANALYSIS: Missing required fields")
             return jsonify({"success": False, "error": "Missing required fields"}), 400
-
-        print(f"📊 Analyzing interview - Session: {session_id}, Chat: {chat_id}")
-
+        print(f"🔍 INTERVIEW_ANALYSIS: Fetching conversation history...")
+        
         # Get conversation history
         conn = sqlite3.connect(DATABASE_FILE)
         c = conn.cursor()
@@ -888,30 +898,28 @@ def analyze_interview():
         )
         history = c.fetchall()
         conn.close()
-
+        print(f"📚 INTERVIEW_ANALYSIS: Found {len(history)} conversation exchanges")
         if not history or len(history) < 2:
+            print(f"⚠️ INTERVIEW_ANALYSIS: Insufficient data ({len(history)} exchanges)")
             return jsonify({
                 "success": False,
                 "error": "Insufficient interview data"
             }), 400
-
         # Calculate completion percentage
         completion_percentage = min(100, int((len(history) / 5) * 100))
-
+        print(f"📈 INTERVIEW_ANALYSIS: Completion: {completion_percentage}%")
         # Build analysis prompt
         candidate_name = user_details.get('name', 'Candidate')
         position = offer_details.get('position', 'Position')
-
+        print(f"🤖 INTERVIEW_ANALYSIS: Building AI analysis prompt...")
         analysis_prompt = f"""You are an expert HR analyst. Analyze this interview transcript comprehensively.
 CANDIDATE: {candidate_name}
 POSITION: {position}
 COMPANY: {offer_details.get('company', 'Company')}
 INTERVIEW TRANSCRIPT:
 """
-
         for i, (user_msg, ai_msg) in enumerate(history, 1):
             analysis_prompt += f"\nQ{i} (Interviewer): {ai_msg}\nA{i} (Candidate): {user_msg}\n"
-
         analysis_prompt += """
 Provide a detailed analysis in JSON format:
 {
@@ -930,75 +938,105 @@ Provide a detailed analysis in JSON format:
   "summary": "2-3 sentence overall assessment"
 }
 Be specific, constructive, and professional."""
-
+        print(f"🔑 INTERVIEW_ANALYSIS: Prompt length: {len(analysis_prompt)} chars")
         # Call Gemini AI
         if not gemini_clients:
+            print("❌ INTERVIEW_ANALYSIS: No Gemini clients configured")
             return jsonify({"success": False, "error": "AI service not available"}), 500
-
         key_name = get_random_key()
         if not key_name:
+            print("❌ INTERVIEW_ANALYSIS: No API keys available")
             return jsonify({"success": False, "error": "No AI keys available"}), 500
-
+        print(f"🔑 INTERVIEW_ANALYSIS: Using key: {key_name}")
         client = gemini_clients[key_name]
-
+        print(f"🤖 INTERVIEW_ANALYSIS: Calling Gemini AI...")
         response = client.models.generate_content(
             model="gemini-2.5-flash",
             contents=analysis_prompt,
             config=types.GenerateContentConfig(temperature=0.3, max_output_tokens=4096)
         )
-
         result_text = response.text.strip() if hasattr(response, 'text') else ""
-
+        print(f"📤 INTERVIEW_ANALYSIS: AI response length: {len(result_text)} chars")
+        print(f"📤 INTERVIEW_ANALYSIS: AI response preview: {result_text[:200]}...")
         # Parse JSON response
         if "```json" in result_text:
+            print(f"🔧 INTERVIEW_ANALYSIS: Cleaning JSON markdown")
             result_text = result_text.replace('```json', '').replace('```', '').strip()
-
-        analysis = json.loads(result_text)
-
+        print(f"🔍 INTERVIEW_ANALYSIS: Parsing JSON...")
+        try:
+            analysis = json.loads(result_text)
+            print(f"✅ INTERVIEW_ANALYSIS: JSON parsed successfully")
+        except json.JSONDecodeError as json_err:
+            print(f"❌ INTERVIEW_ANALYSIS: JSON parse error: {json_err}")
+            print(f"❌ INTERVIEW_ANALYSIS: Failed JSON: {result_text[:500]}")
+            return jsonify({"success": False, "error": f"Invalid AI response format: {str(json_err)}"}), 500
         # Add metadata
         analysis['candidate_name'] = candidate_name
         analysis['position'] = position
         analysis['completion_percentage'] = completion_percentage
         analysis['interview_duration'] = f"{len(history)} exchanges"
-
-        print(f"✅ Analysis complete - Score: {analysis.get('overall_score', 0)}, Recommendation: {analysis.get('recommendation', 'N/A')}")
-
+        print(f"✅ INTERVIEW_ANALYSIS: Analysis complete")
+        print(f"📊 INTERVIEW_ANALYSIS: Score={analysis.get('overall_score', 0)}")
+        print(f"📊 INTERVIEW_ANALYSIS: Recommendation={analysis.get('recommendation', 'N/A')}")
+        print(f"📊 INTERVIEW_ANALYSIS: Strengths={len(analysis.get('strengths', []))}")
+        print(f"📊 INTERVIEW_ANALYSIS: Weaknesses={len(analysis.get('weaknesses', []))}")
         # Send to NestJS backend
+        print(f"🌐 INTERVIEW_ANALYSIS: Sending to NestJS backend...")
+        print(f"🌐 INTERVIEW_ANALYSIS: NestJS URL: {NESTJS_BACKEND_URL}")
+        
         message_sent = False
         try:
+            nestjs_payload = {
+                "chat_id": chat_id,
+                "analysis": analysis,
+                "session_id": session_id
+            }
+            print(f"📦 INTERVIEW_ANALYSIS: NestJS payload keys: {list(nestjs_payload.keys())}")
+            print(f"📦 INTERVIEW_ANALYSIS: chat_id={chat_id}")
+            
             nestjs_response = requests.post(
                 f"{NESTJS_BACKEND_URL}/chat/interview-result",
-                json={
-                    "chat_id": chat_id,
-                    "analysis": analysis,
-                    "session_id": session_id
-                },
+                json=nestjs_payload,
                 timeout=10
             )
-
+            print(f"📡 INTERVIEW_ANALYSIS: NestJS response status: {nestjs_response.status_code}")
+            print(f"📡 INTERVIEW_ANALYSIS: NestJS response body: {nestjs_response.text[:500]}")
             if nestjs_response.status_code in [200, 201]:
-                print(f"✅ Interview result saved to NestJS backend")
+                print(f"✅ INTERVIEW_ANALYSIS: Successfully saved to NestJS")
                 message_sent = True
             else:
-                print(f"⚠️ NestJS save failed with status {nestjs_response.status_code}: {nestjs_response.text}")
+                print(f"⚠️ INTERVIEW_ANALYSIS: NestJS save failed")
+                print(f"⚠️ INTERVIEW_ANALYSIS: Status: {nestjs_response.status_code}")
+                print(f"⚠️ INTERVIEW_ANALYSIS: Response: {nestjs_response.text}")
                 message_sent = False
-
-        except requests.exceptions.RequestException as nest_error:
-            print(f"⚠️ Could not send to NestJS: {nest_error}")
+        except requests.exceptions.Timeout as timeout_err:
+            print(f"⏱️ INTERVIEW_ANALYSIS: NestJS request timeout: {timeout_err}")
             message_sent = False
-
+        except requests.exceptions.ConnectionError as conn_err:
+            print(f"🔌 INTERVIEW_ANALYSIS: NestJS connection error: {conn_err}")
+            message_sent = False
+        except requests.exceptions.RequestException as req_err:
+            print(f"⚠️ INTERVIEW_ANALYSIS: NestJS request error: {req_err}")
+            message_sent = False
         # Return analysis
+        print(f"✅ INTERVIEW_ANALYSIS: Returning response to Android")
+        print("=" * 80)
+        
         return jsonify({
             "success": True,
             "analysis": analysis,
             "message_sent": message_sent,
             "nestjs_backend": NESTJS_BACKEND_URL
         })
-
     except Exception as e:
-        print(f"❌ Interview Analysis Error: {e}")
+        print("=" * 80)
+        print(f"❌ INTERVIEW_ANALYSIS: CRITICAL ERROR")
+        print(f"❌ INTERVIEW_ANALYSIS: Error type: {type(e).__name__}")
+        print(f"❌ INTERVIEW_ANALYSIS: Error message: {str(e)}")
+        print("=" * 80)
         import traceback
         traceback.print_exc()
+        print("=" * 80)
         return jsonify({"success": False, "error": str(e)}), 500
 
 
