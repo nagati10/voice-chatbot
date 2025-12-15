@@ -15,8 +15,7 @@ import random
 app = Flask(__name__)
 CORS(app)
 
-# ========== WEBSOCKET SETUP (Production-ready) ==========
-
+# ========== WEBSOCKET SETUP (No monkey patching needed for production) ==========
 socketio = SocketIO(
     app,
     cors_allowed_origins="*",
@@ -24,18 +23,13 @@ socketio = SocketIO(
     ping_timeout=60,
     ping_interval=25,
     engineio_logger=False,
-    socketio_logger=False,
-    # ⭐ FIX: Add these for production compatibility
-    logger=False,
-    always_connect=True,
-    manage_session=False
+    socketio_logger=False
 )
 
 # Track connected users
 connected_users = {}  # {user_id: session_id}
 
 # ========== CONFIG ==========
-
 GEMINI_KEYS = {
     'key1': os.getenv("GEMINI_KEY1"),
     'key2': os.getenv("GEMINI_KEY2"),
@@ -64,22 +58,13 @@ else:
     print(f"🎯 Total active keys: {len(gemini_clients)}")
 
 # ========== DATABASE ==========
-
-# ⭐ FIX: Register datetime adapter for Python 3.13+
-sqlite3.register_adapter(datetime, lambda val: val.isoformat())
-sqlite3.register_converter("DATETIME", lambda val: datetime.fromisoformat(val.decode()))
-
 def init_db():
-    conn = sqlite3.connect(DATABASE_FILE, detect_types=sqlite3.PARSE_DECLTYPES)
+    conn = sqlite3.connect(DATABASE_FILE)
     c = conn.cursor()
-
     c.execute('''CREATE TABLE IF NOT EXISTS conversations
-                 (session_id TEXT, timestamp DATETIME, user_input TEXT,
-                  ai_response TEXT, language TEXT)''')
-
+                 (session_id TEXT, timestamp DATETIME, user_input TEXT, ai_response TEXT, language TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS key_usage
                  (key_name TEXT, timestamp DATETIME, endpoint TEXT, status TEXT)''')
-
     c.execute('''CREATE TABLE IF NOT EXISTS interview_invitations
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   chat_id TEXT NOT NULL,
@@ -91,7 +76,7 @@ def init_db():
                   created_at DATETIME,
                   responded_at DATETIME,
                   UNIQUE(chat_id, from_user_id, to_user_id))''')
-
+    # ⭐ Interview sessions table
     c.execute('''CREATE TABLE IF NOT EXISTS interview_sessions
                  (session_id TEXT PRIMARY KEY,
                   current_question INTEGER DEFAULT 0,
@@ -102,7 +87,6 @@ def init_db():
                   status TEXT DEFAULT 'in_progress',
                   started_at DATETIME,
                   completed_at DATETIME)''')
-
     conn.commit()
     conn.close()
 
@@ -125,7 +109,6 @@ def handle_disconnect():
             user_id = uid
             del connected_users[uid]
             break
-
     if user_id:
         print(f"👤 User {user_id} disconnected")
     else:
@@ -138,11 +121,11 @@ def on_join(data):
     if not user_id:
         emit('error', {'message': 'userId required'})
         return
-
+    
     join_room(f"user_{user_id}")
     connected_users[user_id] = request.sid
+    
     print(f"✅ User {user_id} joined room user_{user_id}")
-
     emit('join_response', {
         'success': True,
         'message': f'Joined room user_{user_id}',
@@ -164,14 +147,7 @@ def on_ping():
     """Heartbeat"""
     emit('pong')
 
-# ⭐ NEW: Error handler for WebSocket
-@socketio.on_error_default
-def default_error_handler(e):
-    print(f"❌ WebSocket error: {e}")
-    return False
-
 # ========== HELPER FUNCTIONS ==========
-
 def get_random_key():
     if not gemini_clients:
         return None
@@ -180,22 +156,22 @@ def get_random_key():
 def detect_language_from_text(text):
     if not text or not text.strip():
         return 'en'
-
+    
     text_lower = text.lower().strip()
+    
     arabic_chars = set('ابتثجحخدذرزسشصضطظعغفقكلمنهوي')
-
     if any(char in arabic_chars for char in text):
         return 'ar'
-
+    
     if any('\u4e00' <= c <= '\u9fff' for c in text):
         return 'zh'
-
+    
     if any('\u3040' <= c <= '\u309f' for c in text) or any('\u30a0' <= c <= '\u30ff' for c in text):
         return 'ja'
-
+    
     if any('\uac00' <= c <= '\ud7a3' for c in text):
         return 'ko'
-
+    
     language_keywords = {
         'en': ['hello', 'hi', 'thank', 'please', 'how', 'what'],
         'es': ['hola', 'gracias', 'por favor', 'cómo', 'qué'],
@@ -203,22 +179,20 @@ def detect_language_from_text(text):
         'de': ['hallo', 'danke', 'bitte', 'wie', 'was'],
         'ar': ['مرحبا', 'شكرا', 'من فضلك', 'كيف', 'ما'],
     }
-
+    
     for lang, keywords in language_keywords.items():
         for keyword in keywords:
             if keyword in text_lower:
                 return lang
-
+    
     return 'en'
 
 def save_conversation(session_id, user_input, ai_response, language='en'):
     try:
-        conn = sqlite3.connect(DATABASE_FILE, detect_types=sqlite3.PARSE_DECLTYPES)
+        conn = sqlite3.connect(DATABASE_FILE)
         c = conn.cursor()
-        c.execute(
-            "INSERT INTO conversations VALUES (?, ?, ?, ?, ?)",
-            (session_id, datetime.now(), user_input, ai_response, language)
-        )
+        c.execute("INSERT INTO conversations VALUES (?, ?, ?, ?, ?)",
+                  (session_id, datetime.now(), user_input, ai_response, language))
         conn.commit()
         conn.close()
     except Exception as e:
@@ -226,13 +200,10 @@ def save_conversation(session_id, user_input, ai_response, language='en'):
 
 def get_conversation_history(session_id, limit=10):
     try:
-        conn = sqlite3.connect(DATABASE_FILE, detect_types=sqlite3.PARSE_DECLTYPES)
+        conn = sqlite3.connect(DATABASE_FILE)
         c = conn.cursor()
-        c.execute(
-            "SELECT user_input, ai_response FROM conversations "
-            "WHERE session_id=? ORDER BY timestamp DESC LIMIT ?",
-            (session_id, limit)
-        )
+        c.execute("SELECT user_input, ai_response FROM conversations WHERE session_id=? ORDER BY timestamp DESC LIMIT ?",
+                  (session_id, limit))
         history = c.fetchall()
         conn.close()
         return list(reversed(history))
@@ -240,8 +211,9 @@ def get_conversation_history(session_id, limit=10):
         print(f"Database error: {e}")
         return []
 
+# ⭐ Interview session helpers
 def get_or_create_interview_session(session_id):
-    conn = sqlite3.connect(DATABASE_FILE, detect_types=sqlite3.PARSE_DECLTYPES)
+    conn = sqlite3.connect(DATABASE_FILE)
     c = conn.cursor()
     c.execute("SELECT session_id, current_question, status FROM interview_sessions WHERE session_id=?",
               (session_id,))
@@ -260,7 +232,7 @@ def get_or_create_interview_session(session_id):
     return 0, 'in_progress'
 
 def update_interview_session_progress(session_id, current_question, status=None):
-    conn = sqlite3.connect(DATABASE_FILE, detect_types=sqlite3.PARSE_DECLTYPES)
+    conn = sqlite3.connect(DATABASE_FILE)
     c = conn.cursor()
     if status and status == 'completed':
         c.execute(
@@ -276,34 +248,32 @@ def update_interview_session_progress(session_id, current_question, status=None)
     conn.close()
 
 # ========== INTERVIEW INVITATION HELPERS ==========
-
 def save_interview_invitation(chat_id, from_user_id, to_user_id, from_user_name, offer_id):
     """Save or update an interview invitation"""
     try:
-        conn = sqlite3.connect(DATABASE_FILE, detect_types=sqlite3.PARSE_DECLTYPES)
+        conn = sqlite3.connect(DATABASE_FILE)
         c = conn.cursor()
-
-        c.execute('''SELECT id, status FROM interview_invitations
+        
+        c.execute('''SELECT id, status FROM interview_invitations 
                      WHERE chat_id=? AND from_user_id=? AND to_user_id=?''',
                   (chat_id, from_user_id, to_user_id))
         existing = c.fetchone()
-
+        
         if existing:
-            c.execute('''UPDATE interview_invitations
+            c.execute('''UPDATE interview_invitations 
                          SET status='pending', created_at=?, responded_at=NULL
                          WHERE id=?''',
                       (datetime.now(), existing[0]))
         else:
-            c.execute('''INSERT INTO interview_invitations
-                         (chat_id, from_user_id, to_user_id, from_user_name,
-                          offer_id, status, created_at)
+            c.execute('''INSERT INTO interview_invitations 
+                         (chat_id, from_user_id, to_user_id, from_user_name, offer_id, status, created_at)
                          VALUES (?, ?, ?, ?, ?, 'pending', ?)''',
-                      (chat_id, from_user_id, to_user_id,
-                       from_user_name, offer_id, datetime.now()))
-
+                      (chat_id, from_user_id, to_user_id, from_user_name, offer_id, datetime.now()))
+        
         conn.commit()
         invitation_id = existing[0] if existing else c.lastrowid
         conn.close()
+        
         return {"success": True, "invitation_id": invitation_id}
     except Exception as e:
         print(f"❌ Error saving invitation: {e}")
@@ -312,24 +282,23 @@ def save_interview_invitation(chat_id, from_user_id, to_user_id, from_user_name,
 def get_pending_invitations(user_id):
     """Get all pending invitations for a user"""
     try:
-        conn = sqlite3.connect(DATABASE_FILE, detect_types=sqlite3.PARSE_DECLTYPES)
+        conn = sqlite3.connect(DATABASE_FILE)
         c = conn.cursor()
-        c.execute('''SELECT id, chat_id, from_user_id, from_user_name,
-                            offer_id, created_at
-                     FROM interview_invitations
+        c.execute('''SELECT id, chat_id, from_user_id, from_user_name, offer_id, created_at
+                     FROM interview_invitations 
                      WHERE to_user_id=? AND status='pending'
                      ORDER BY created_at DESC''',
                   (user_id,))
         invitations = c.fetchall()
         conn.close()
-
+        
         return [{
             "invitation_id": inv[0],
             "chat_id": inv[1],
             "from_user_id": inv[2],
             "from_user_name": inv[3],
             "offer_id": inv[4],
-            "created_at": str(inv[5]) if inv[5] else None
+            "created_at": inv[5]
         } for inv in invitations]
     except Exception as e:
         print(f"❌ Error getting invitations: {e}")
@@ -338,9 +307,9 @@ def get_pending_invitations(user_id):
 def update_invitation_status(invitation_id, status):
     """Update invitation status (accepted/rejected)"""
     try:
-        conn = sqlite3.connect(DATABASE_FILE, detect_types=sqlite3.PARSE_DECLTYPES)
+        conn = sqlite3.connect(DATABASE_FILE)
         c = conn.cursor()
-        c.execute('''UPDATE interview_invitations
+        c.execute('''UPDATE interview_invitations 
                      SET status=?, responded_at=?
                      WHERE id=?''',
                   (status, datetime.now(), invitation_id))
@@ -354,16 +323,15 @@ def update_invitation_status(invitation_id, status):
 def get_invitation_by_id(invitation_id):
     """Get invitation details by ID"""
     try:
-        conn = sqlite3.connect(DATABASE_FILE, detect_types=sqlite3.PARSE_DECLTYPES)
+        conn = sqlite3.connect(DATABASE_FILE)
         c = conn.cursor()
-        c.execute('''SELECT id, chat_id, from_user_id, to_user_id,
-                            from_user_name, offer_id, status,
-                            created_at, responded_at
+        c.execute('''SELECT id, chat_id, from_user_id, to_user_id, from_user_name, 
+                            offer_id, status, created_at, responded_at
                      FROM interview_invitations WHERE id=?''',
                   (invitation_id,))
         inv = c.fetchone()
         conn.close()
-
+        
         if inv:
             return {
                 "invitation_id": inv[0],
@@ -373,8 +341,8 @@ def get_invitation_by_id(invitation_id):
                 "from_user_name": inv[4],
                 "offer_id": inv[5],
                 "status": inv[6],
-                "created_at": str(inv[7]) if inv[7] else None,
-                "responded_at": str(inv[8]) if inv[8] else None
+                "created_at": inv[7],
+                "responded_at": inv[8]
             }
         return None
     except Exception as e:
@@ -382,7 +350,6 @@ def get_invitation_by_id(invitation_id):
         return None
 
 # ========== SYSTEM PROMPT BUILDERS ==========
-
 def build_system_prompt(user_details, offer_details, chat_history):
     base_prompt = """You are an expert job interview coach for "Talleb 5edma" (طلب خدمة - Interview Preparation Service).
 
@@ -401,6 +368,7 @@ RESPONSE GUIDELINES:
 
     if user_details:
         user_context = f"""
+
 CANDIDATE PROFILE:
 Name: {user_details.get('name', 'Unknown')}
 Experience: {user_details.get('experience_level', 'Not specified')}
@@ -412,6 +380,7 @@ Languages: {', '.join(user_details.get('languages', [])) if isinstance(user_deta
 
     if offer_details:
         offer_context = f"""
+
 JOB OPPORTUNITY:
 Position: {offer_details.get('position', 'Not specified')}
 Company: {offer_details.get('company', 'Not specified')}
@@ -421,7 +390,8 @@ Location: {offer_details.get('location', 'Not specified')}"""
         base_prompt += offer_context
 
     if chat_history:
-        base_prompt += """
+        base_prompt += f"""
+
 CONVERSATION HISTORY (Remember this context):
 """
         for user_msg, ai_msg in chat_history[-5:]:
@@ -429,10 +399,10 @@ CONVERSATION HISTORY (Remember this context):
 
     return base_prompt
 
+# ⭐ Professional 5-question structured interview
 def build_employer_interview_prompt(user_details, offer_details, chat_history, current_question_index=0):
-    """
-    Professional structured mock interview with 5 ordered questions and active listening
-    """
+    """Professional structured mock interview with 5 ordered questions and active listening"""
+    
     position_title = offer_details.get('position', 'this position')
     required_skills = offer_details.get('required_skills', [])
     main_skill = required_skills[0] if isinstance(required_skills, list) and required_skills else "your key skills"
@@ -500,45 +470,43 @@ RECENT CONVERSATION (use this to react naturally):
     return prompt
 
 # ========== AI FUNCTIONS ==========
-
 def transcribe_with_gemini(audio_bytes, mime_type="audio/webm"):
     if not gemini_clients:
         return "Speech-to-text service not configured.", "en"
-
+    
     available_keys = list(gemini_clients.keys())
     random.shuffle(available_keys)
-
+    
     for key_name in available_keys:
         try:
             client = gemini_clients[key_name]
             print(f"🎤 Transcribing with {key_name.upper()}...")
-
+            
             prompt = """Listen to this audio and transcribe the speech to text.
 Detect the language and return ONLY a valid JSON response:
 {"text": "transcribed text", "language": "en", "confidence": 0.95}"""
-
+            
             response = client.models.generate_content(
                 model="gemini-2.5-flash",
                 contents=[prompt, types.Part.from_bytes(data=audio_bytes, mime_type=mime_type)],
                 config=types.GenerateContentConfig(temperature=0.1, max_output_tokens=2048)
             )
-
+            
             result_text = response.text.strip() if hasattr(response, 'text') else ""
             if "json" in result_text.lower() and '`' in result_text:
-                result_text = result_text.replace('``````', '').strip()
-
+                result_text = result_text.replace('```json', '').replace('```', '').strip()
+            
             try:
                 result = json.loads(result_text)
                 text = result.get("text", "").strip()
                 language = result.get("language", "en")
                 if not text:
                     return "Could not hear that clearly. Please repeat.", "en"
-
                 print(f"✅ Transcribed: {text}")
                 return text, language
             except:
                 return "Could not understand audio.", "en"
-
+                
         except Exception as e:
             if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e) or "quota" in str(e).lower():
                 print(f"⚠️ {key_name.upper()} quota exceeded")
@@ -546,55 +514,51 @@ Detect the language and return ONLY a valid JSON response:
             else:
                 print(f"❌ {key_name.upper()} error: {e}")
                 continue
-
+    
     return "❌ All API keys have hit their quota.", "en"
 
 def get_ai_response(text, user_details, offer_details, chat_history, mode, language, session_id=None):
     if not gemini_clients:
         return "AI service not configured."
-
+    
     available_keys = list(gemini_clients.keys())
     random.shuffle(available_keys)
-
+    
     for key_name in available_keys:
         try:
             client = gemini_clients[key_name]
-
+            
             if mode == 'employer_interview':
                 current_q, status = get_or_create_interview_session(session_id or "default")
-                system_prompt = build_employer_interview_prompt(
-                    user_details,
-                    offer_details,
-                    chat_history,
-                    current_question_index=current_q
-                )
+                system_prompt = build_employer_interview_prompt(user_details, offer_details, chat_history, current_question_index=current_q)
             else:
                 system_prompt = build_system_prompt(user_details, offer_details, chat_history)
-
-            full_prompt = f"{system_prompt}\n\n--- CANDIDATE MESSAGE ---\n{text}"
-
+            
+            full_prompt = f"{system_prompt}\n\n--- CURRENT MESSAGE ---\n{text}"
             print(f"📤 Trying {key_name.upper()}...")
+            
             response = client.models.generate_content(
                 model="gemini-2.5-flash",
                 contents=full_prompt,
                 config=types.GenerateContentConfig(temperature=0.7, max_output_tokens=2048)
             )
-
+            
             ai_text = response.text.strip() if hasattr(response, 'text') else ""
             if ai_text:
                 print(f"✅ Response from {key_name.upper()}")
-
+                
+                # ⭐ Advance question index for interview mode
                 if mode == 'employer_interview':
                     new_q = current_q + 1
                     if new_q >= 5:
                         update_interview_session_progress(session_id or "default", 5, status='completed')
                     else:
                         update_interview_session_progress(session_id or "default", new_q)
-
+                
                 return ai_text
             else:
                 return "Sorry, I couldn't generate a response."
-
+                
         except Exception as e:
             if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e) or "quota" in str(e).lower():
                 print(f"⚠️ {key_name.upper()} quota exceeded")
@@ -602,7 +566,7 @@ def get_ai_response(text, user_details, offer_details, chat_history, mode, langu
             else:
                 print(f"❌ {key_name.upper()} error: {e}")
                 continue
-
+    
     return "❌ All API keys have hit their quota."
 
 def text_to_speech(text, language='en'):
@@ -620,13 +584,12 @@ def text_to_speech(text, language='en'):
         return None
 
 # ========== ROUTES ==========
-
 @app.route('/')
 def index():
     return jsonify({
         "status": "active",
         "message": "Talleb 5edma - Interview Coaching API",
-        "features": ["text-chat", "voice-chat", "interview-invitations", "websocket", "structured-interview", "feedback"],
+        "features": ["text-chat", "voice-chat", "interview-invitations", "websocket", "structured-interview"],
         "websocket_enabled": True,
         "async_mode": "threading"
     })
@@ -641,26 +604,24 @@ def text_chat():
         user_details = data.get('user_details', {})
         offer_details = data.get('offer_details', {})
         chat_history = data.get('chat_history', [])
-
+        
         if not text:
             return jsonify({"success": False, "error": "No text provided"}), 400
-
+        
         print(f"💬 {mode}: {text}")
-
         language = detect_language_from_text(text)
-
+        
         question_number = None
         progress = None
-
         if mode == 'employer_interview':
             current_q, status = get_or_create_interview_session(session_id)
             question_number = current_q + 1
             progress = f"{min(question_number, 5)}/5"
             print(f"📊 Interview Progress: Question {question_number}/5 - Status: {status}")
-
+        
         ai_response = get_ai_response(text, user_details, offer_details, chat_history, mode, language, session_id)
         save_conversation(session_id, text, ai_response, language)
-
+        
         return jsonify({
             "success": True,
             "ai_response": ai_response,
@@ -670,7 +631,7 @@ def text_chat():
             "question_number": question_number,
             "progress": progress
         })
-
+        
     except Exception as e:
         print(f"❌ Error: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
@@ -680,30 +641,30 @@ def voice_chat():
     try:
         if 'audio' not in request.files:
             return jsonify({"success": False, "error": "No audio file"}), 400
-
+        
         audio_file = request.files['audio']
         if not audio_file or audio_file.filename == '':
             return jsonify({"success": False, "error": "Audio file is empty"}), 400
-
+        
         audio_bytes = audio_file.read()
         if len(audio_bytes) < 500:
             return jsonify({"success": False, "error": "Audio too short"}), 400
-
+        
         session_id = request.form.get('session_id', 'default')
         mode = request.form.get('mode', 'coaching')
-
+        
         try:
             user_details = json.loads(request.form.get('user_details', '{}'))
             offer_details = json.loads(request.form.get('offer_details', '{}'))
         except json.JSONDecodeError:
             return jsonify({"success": False, "error": "Invalid JSON"}), 400
-
+        
         transcribed_text, detected_language = transcribe_with_gemini(audio_bytes, "audio/webm")
         if "error" in transcribed_text.lower():
             return jsonify({"success": False, "error": transcribed_text}), 400
-
+        
         chat_history = get_conversation_history(session_id)
-
+        
         question_number = None
         progress = None
         if mode == 'employer_interview':
@@ -711,20 +672,12 @@ def voice_chat():
             question_number = current_q + 1
             progress = f"{min(question_number, 5)}/5"
             print(f"🎧 Interview (voice) Progress: Question {question_number}/5 - Status: {status}")
-
-        ai_response = get_ai_response(
-            transcribed_text,
-            user_details,
-            offer_details,
-            chat_history,
-            mode,
-            detected_language,
-            session_id
-        )
-
+        
+        ai_response = get_ai_response(transcribed_text, user_details, offer_details, chat_history, mode, detected_language, session_id)
         save_conversation(session_id, transcribed_text, ai_response, detected_language)
+        
         audio_response = text_to_speech(ai_response, detected_language)
-
+        
         return jsonify({
             "success": True,
             "transcribed_text": transcribed_text,
@@ -735,13 +688,12 @@ def voice_chat():
             "question_number": question_number,
             "progress": progress
         })
-
+        
     except Exception as e:
         print(f"❌ Voice Chat Error: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
 # ========== INTERVIEW INVITATION ENDPOINTS ==========
-
 @app.route('/api/send-interview-invitation', methods=['POST'])
 def send_interview_invitation():
     try:
@@ -751,17 +703,18 @@ def send_interview_invitation():
         to_user_id = data.get('to_user_id')
         from_user_name = data.get('from_user_name', 'Company')
         offer_id = data.get('offer_id')
-
+        
         if not all([chat_id, from_user_id, to_user_id]):
             return jsonify({"success": False, "error": "Missing required fields"}), 400
-
+        
         print(f"📨 Interview Invitation: {from_user_name} → Student")
-
+        
         result = save_interview_invitation(chat_id, from_user_id, to_user_id, from_user_name, offer_id)
+        
         if result["success"]:
             invitation_id = result["invitation_id"]
             invitation = get_invitation_by_id(invitation_id)
-
+            
             socketio.emit('invitation_received', {
                 'invitation_id': invitation_id,
                 'chat_id': chat_id,
@@ -771,9 +724,9 @@ def send_interview_invitation():
                 'created_at': str(invitation['created_at']) if invitation else '',
                 'status': 'pending'
             }, room=f"user_{to_user_id}")
-
+            
             print(f"📤 WebSocket: Sent to user_{to_user_id}")
-
+            
             return jsonify({
                 "success": True,
                 "message": "Interview invitation sent",
@@ -782,7 +735,7 @@ def send_interview_invitation():
             })
         else:
             return jsonify({"success": False, "error": result["error"]}), 500
-
+            
     except Exception as e:
         print(f"❌ Send Invitation Error: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
@@ -800,29 +753,30 @@ def accept_interview_invitation():
     try:
         data = request.json
         invitation_id = data.get('invitation_id')
-
+        
         if not invitation_id:
             return jsonify({"success": False, "error": "Missing invitation_id"}), 400
-
+        
         invitation = get_invitation_by_id(invitation_id)
         if not invitation:
             return jsonify({"success": False, "error": "Invitation not found"}), 404
-
+        
         if invitation["status"] != "pending":
             return jsonify({"success": False, "error": f"Already {invitation['status']}"}), 400
-
+        
         result = update_invitation_status(invitation_id, "accepted")
+        
         if result["success"]:
             socketio.emit('invitation_accepted', {
                 'invitation_id': invitation_id,
                 'from_user_id': invitation['from_user_id'],
                 'to_user_id': invitation['to_user_id']
             }, room=f"user_{invitation['from_user_id']}")
-
+            
             return jsonify({"success": True, "message": "Invitation accepted", "invitation": invitation})
         else:
             return jsonify({"success": False, "error": result["error"]}), 500
-
+            
     except Exception as e:
         print(f"❌ Accept Error: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
@@ -832,85 +786,27 @@ def reject_interview_invitation():
     try:
         data = request.json
         invitation_id = data.get('invitation_id')
-
+        
         if not invitation_id:
             return jsonify({"success": False, "error": "Missing invitation_id"}), 400
-
+        
         invitation = get_invitation_by_id(invitation_id)
         if not invitation:
             return jsonify({"success": False, "error": "Invitation not found"}), 404
-
+        
         result = update_invitation_status(invitation_id, "rejected")
+        
         if result["success"]:
             socketio.emit('invitation_rejected', {
                 'invitation_id': invitation_id,
                 'from_user_id': invitation['from_user_id']
             }, room=f"user_{invitation['from_user_id']}")
-
+            
             return jsonify({"success": True, "message": "Invitation rejected"})
         else:
             return jsonify({"success": False, "error": result["error"]}), 500
-
+            
     except Exception as e:
-        print(f"❌ Reject Error: {e}")
-        return jsonify({"success": False, "error": str(e)}), 500
-
-@app.route('/api/interview-feedback', methods=['POST'])
-def get_interview_feedback():
-    """Generate structured feedback after interview"""
-    try:
-        data = request.json
-        session_id = data.get('session_id')
-
-        if not session_id:
-            return jsonify({"success": False, "error": "Missing session_id"}), 400
-
-        chat_history = get_conversation_history(session_id, limit=30)
-
-        if not chat_history:
-            return jsonify({"success": False, "error": "No conversation found"}), 404
-
-        formatted_history = "\n\n".join(
-            [f"Q: {ai}\nA: {user}" for (user, ai) in chat_history]
-        )
-
-        feedback_prompt = f"""You are an experienced hiring manager and interview coach.
-
-Review this MOCK INTERVIEW conversation and provide clear, structured feedback:
-
-CONVERSATION:
-{formatted_history}
-
-Provide feedback in this structure:
-1) Overall Performance (score 1-10 with explanation)
-2) Main Strengths (2-3 bullet points)
-3) Key Areas for Improvement (2-3 bullet points)
-4) Concrete Tips (actionable suggestions)
-5) Suggested Next Practice Steps
-
-Keep the tone encouraging, direct, and practical."""
-
-        key_name = get_random_key()
-        if not key_name:
-            return jsonify({"success": False, "error": "No API keys available"}), 500
-
-        client = gemini_clients[key_name]
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=feedback_prompt,
-            config=types.GenerateContentConfig(temperature=0.7, max_output_tokens=1500)
-        )
-
-        feedback = response.text.strip() if hasattr(response, 'text') else ""
-
-        return jsonify({
-            "success": True,
-            "feedback": feedback,
-            "session_id": session_id
-        })
-
-    except Exception as e:
-        print(f"❌ Feedback Error: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/api/quota-status', methods=['GET'])
@@ -919,7 +815,7 @@ def quota_status():
     for key_name in gemini_clients.keys():
         try:
             client = gemini_clients[key_name]
-            client.models.generate_content(
+            response = client.models.generate_content(
                 model="gemini-2.5-flash",
                 contents="ping",
                 config=types.GenerateContentConfig(temperature=0.1, max_output_tokens=10)
@@ -927,7 +823,7 @@ def quota_status():
             status[key_name] = "✅ Available"
         except Exception as e:
             status[key_name] = "❌ Quota Exceeded" if "quota" in str(e).lower() else "⚠️ Error"
-
+    
     return jsonify({
         "timestamp": datetime.now().isoformat(),
         "keys": status,
@@ -955,9 +851,9 @@ def health():
     })
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 10000))
-    print("🚀 Starting Talleb 5edma - Interview Coaching")
+    port = int(os.environ.get('PORT', 5000))
+    print(f"🚀 Starting Talleb 5edma - Interview Coaching")
     print(f"🚀 Port: {port}")
     print(f"🔑 Active Keys: {len(gemini_clients)}")
-    print("🧠 Features: Text + Voice + WebSocket + Invitations + Structured Interview + Feedback")
+    print(f"🧠 Features: Text + Voice Chat + WebSocket + Interview Invitations + Structured Interview")
     socketio.run(app, host='0.0.0.0', port=port, debug=False, allow_unsafe_werkzeug=True)
