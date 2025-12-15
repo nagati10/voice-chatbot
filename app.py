@@ -354,7 +354,7 @@ def get_invitation_by_id(invitation_id):
 
 # ========== SYSTEM PROMPT BUILDERS ==========
 def build_system_prompt(user_details, offer_details, chat_history):
-    base_prompt = """You are an expert job interview coach for "Talleb 5edma" (طلب خدمة - Interview Preparation Service).
+    base_prompt = """You are an expert job interview coach for "Talleb 5edma" (طالب خدمة - Interview Preparation Service).
 
 CORE ROLE:
 - Help job seekers prepare for interviews
