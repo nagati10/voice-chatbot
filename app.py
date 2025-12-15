@@ -881,7 +881,7 @@ def analyze_interview():
         duration_seconds = data.get('duration_seconds', 600)
         print(f"📊 INTERVIEW_ANALYSIS: session_id={session_id}")
         print(f"📊 INTERVIEW_ANALYSIS: chat_id={chat_id}")
-        print(f"📊 INTER VIEW_ANALYSIS: user_name={user_details.get('name', 'N/A')}")
+        print(f"📊 INTERVIEW_ANALYSIS: user_name={user_details.get('name', 'N/A')}")
         print(f"📊 INTERVIEW_ANALYSIS: position={offer_details.get('position', 'N/A')}")
         print(f"📊 INTERVIEW_ANALYSIS: duration={duration_seconds}s")
         if not session_id or not chat_id:
@@ -923,14 +923,14 @@ INTERVIEW TRANSCRIPT:
         analysis_prompt += """
 Provide a detailed analysis in STRICT JSON format (no markdown, no code blocks):
 {
-  "overall_score": 65,
+  "overall_score": <0-100>,
   "strengths": ["strength1", "strength2", "strength3"],
   "weaknesses": ["weakness1", "weakness2"],
   "question_analysis": [
     {
       "question": "question text",
       "answer": "answer summary",
-      "score": 7,
+      "score": <0-10>,
       "feedback": "specific feedback"
     }
   ],
@@ -1033,6 +1033,7 @@ CRITICAL:
             nestjs_payload = {
                 "chat_id": chat_id,
                 "analysis": analysis,
+                "session_id": session_id
             }
             print(f"📦 INTERVIEW_ANALYSIS: NestJS payload keys: {list(nestjs_payload.keys())}")
             print(f"📦 INTERVIEW_ANALYSIS: chat_id={chat_id}")
@@ -1081,7 +1082,6 @@ CRITICAL:
         traceback.print_exc()
         print("=" * 80)
         return jsonify({"success": False, "error": str(e)}), 500
-
 
 
 if __name__ == '__main__':
