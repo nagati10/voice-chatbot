@@ -42,7 +42,7 @@ GEMINI_KEYS = {
 ACTIVE_KEYS = {k: v for k, v in GEMINI_KEYS.items() if v}
 DATABASE_FILE = "conversations.db"
 
-NESTJS_BACKEND_URL = os.getenv("NESTJS_BACKEND_URL", "http://localhost:3000")  # Update this!
+NESTJS_BACKEND_URL = os.getenv("NESTJS_BACKEND_URL", "https://talleb-5edma.onrender.com")  # Update this!
 
 LANGUAGE_MAPPING = {
     'en': 'en', 'es': 'es', 'fr': 'fr', 'de': 'de', 'it': 'it',
