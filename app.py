@@ -850,10 +850,196 @@ def health():
         "keys_configured": len(gemini_clients)
     })
 
+@app.route('/api/analyze-interview', methods=['POST'])
+def analyze_interview():
+    """
+    Analyze completed interview and generate comprehensive report
+    Expected payload:
+    {
+      "session_id": "...",
+      "user_details": {...},
+      "offer_details": {...},
+      "chat_id": "...",
+      "duration_seconds": 600
+    }
+    """
+
+# ========== INTERVIEW ANALYSIS ENDPOINT ==========
+def analyze_interview_with_ai(session_id, user_details, offer_details):
+    """
+    Use Gemini AI to comprehensively analyze an interview session
+    """
+    try:
+        # Get full conversation history
+        conn = sqlite3.connect(DATABASE_FILE)
+        c = conn.cursor()
+        c.execute(
+            "SELECT user_input, ai_response FROM conversations WHERE session_id=? ORDER BY timestamp ASC",
+            (session_id,)
+        )
+        history = c.fetchall()
+        conn.close()
+
+        if not history or len(history) < 2:
+            return {
+                "error": "Insufficient interview data",
+                "completion_percentage": 0
+            }
+
+        # Build analysis prompt for Gemini
+        candidate_name = user_details.get('name', 'Candidate')
+        position = offer_details.get('position', 'Position')
+
+        analysis_prompt = f"""You are an expert HR analyst. Analyze this interview transcript comprehensively.
+CANDIDATE: {candidate_name}
+POSITION: {position}
+COMPANY: {offer_details.get('company', 'Company')}
+INTERVIEW TRANSCRIPT:
+"""
+
+        for i, (user_msg, ai_msg) in enumerate(history, 1):
+            analysis_prompt += f"\nQ{i} (Interviewer): {ai_msg}\nA{i} (Candidate): {user_msg}\n"
+
+        analysis_prompt += """
+Provide a detailed analysis in JSON format:
+{
+  "overall_score": <0-100>,
+  "completion_percentage": <percentage of 5 questions answered>,
+  "strengths": ["strength1", "strength2", "strength3"],
+  "weaknesses": ["weakness1", "weakness2"],
+  "question_analysis": [
+    {
+      "question": "question text",
+      "answer": "answer summary",
+      "score": <0-10>,
+      "feedback": "specific feedback"
+    }
+  ],
+  "recommendation": "<STRONG_HIRE|HIRE|MAYBE|NO_HIRE>",
+  "summary": "2-3 sentence overall assessment"
+}
+Be specific, constructive, and professional."""
+        # Call Gemini
+        if not gemini_clients:
+            return {"error": "AI service not available"}
+
+        key_name = get_random_key()
+        if not key_name:
+            return {"error": "No AI keys available"}
+
+        client = gemini_clients[key_name]
+
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=analysis_prompt,
+            config=types.GenerateContentConfig(temperature=0.3, max_output_tokens=4096)
+        )
+
+        result_text = response.text.strip() if hasattr(response, 'text') else ""
+
+        # Clean JSON
+        if "```json" in result_text:
+            result_text = result_text.replace('```json', '').replace('```', '').strip()
+
+        analysis = json.loads(result_text)
+
+        # Add metadata
+        analysis['candidate_name'] = candidate_name
+        analysis['position'] = position
+        analysis['interview_duration'] = f"{len(history)} exchanges"
+
+        return analysis
+
+    except Exception as e:
+        print(f"❌ Analysis error: {e}")
+        return {
+            "error": str(e),
+            "overall_score": 0,
+            "completion_percentage": 0
+        }
+
+@app.route('/api/analyze-interview', methods=['POST'])
+def analyze_interview_endpoint():
+    """
+    Analyze completed interview and send results to enterprise
+    """
+    try:
+        data = request.json
+        session_id = data.get('session_id')
+        chat_id = data.get('chat_id')
+        user_details = data.get('user_details', {})
+        offer_details = data.get('offer_details', {})
+        duration_seconds = data.get('duration_seconds', 600)
+
+        if not session_id or not chat_id:
+            return jsonify({"success": False, "error": "Missing required fields"}), 400
+
+        print(f"📊 Analyzing interview - Session: {session_id}, Chat: {chat_id}")
+
+        # Run AI analysis
+        analysis = analyze_interview_with_ai(session_id, user_details, offer_details)
+
+        if "error" in analysis:
+            return jsonify({
+                "success": False,
+                "error": analysis["error"]
+            }), 500
+
+        # Format results message
+        duration_min = duration_seconds // 60
+        duration_sec = duration_seconds % 60
+
+        recommendation_emoji = {
+            "STRONG_HIRE": "🌟",
+            "HIRE": "✅",
+            "MAYBE": "🤔",
+            "NO_HIRE": "❌"
+        }.get(analysis.get('recommendation', 'MAYBE'), "📊")
+
+        message_content = f"""📊 **Interview Results - {analysis['candidate_name']}**
+**Position:** {analysis['position']}
+**Completion:** {analysis.get('completion_percentage', 100)}%
+**Duration:** {duration_min}:{duration_sec:02d}
+**Overall Score:** {analysis['overall_score']}/100
+✅ **STRENGTHS:**
+"""
+        for strength in analysis.get('strengths', []):
+            message_content += f"• {strength}\n"
+
+        message_content += "\n⚠️ **AREAS FOR IMPROVEMENT:**\n"
+        for weakness in analysis.get('weaknesses', []):
+            message_content += f"• {weakness}\n"
+
+        message_content += "\n📝 **DETAILED FEEDBACK:**\n"
+        for qa in analysis.get('question_analysis', [])[:5]:
+            message_content += f"\n**Q:** {qa['question'][:80]}...\n"
+            message_content += f"**Score:** {qa['score']}/10\n"
+            message_content += f"**Feedback:** {qa['feedback']}\n"
+
+        message_content += f"\n{recommendation_emoji} **RECOMMENDATION:** {analysis['recommendation']}\n"
+        message_content += f"\n{analysis['summary']}"
+
+        print(f"✅ Analysis complete - Score: {analysis['overall_score']}, Recommendation: {analysis['recommendation']}")
+
+        # Return analysis (Android will handle sending to chat for now)
+        return jsonify({
+            "success": True,
+            "analysis": analysis,
+            "formatted_message": message_content,
+            "message_sent": False  # TODO: Implement backend message sending
+        })
+
+    except Exception as e:
+        print(f"❌ Interview Analysis Error: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     print(f"🚀 Starting Talleb 5edma - Interview Coaching")
     print(f"🚀 Port: {port}")
     print(f"🔑 Active Keys: {len(gemini_clients)}")
-    print(f"🧠 Features: Text + Voice Chat + WebSocket + Interview Invitations + Structured Interview")
+    print(f"🧠 Features: Text + Voice Chat + WebSocket + Interview Invitations + Structured Interview + Interview Analysis")
     socketio.run(app, host='0.0.0.0', port=port, debug=False, allow_unsafe_werkzeug=True)
