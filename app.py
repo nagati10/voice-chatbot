@@ -1033,7 +1033,6 @@ CRITICAL:
             nestjs_payload = {
                 "chat_id": chat_id,
                 "analysis": analysis,
-                "session_id": session_id
             }
             print(f"📦 INTERVIEW_ANALYSIS: NestJS payload keys: {list(nestjs_payload.keys())}")
             print(f"📦 INTERVIEW_ANALYSIS: chat_id={chat_id}")
