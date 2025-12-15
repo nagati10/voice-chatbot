@@ -10,6 +10,7 @@ from flask_socketio import SocketIO, emit, join_room, leave_room
 from google import genai
 from google.genai import types
 from gtts import gTTS
+import requests
 import random
 
 app = Flask(__name__)
@@ -40,6 +41,8 @@ GEMINI_KEYS = {
 
 ACTIVE_KEYS = {k: v for k, v in GEMINI_KEYS.items() if v}
 DATABASE_FILE = "conversations.db"
+
+NESTJS_BACKEND_URL = os.getenv("NESTJS_BACKEND_URL", "http://localhost:3000")  # Update this!
 
 LANGUAGE_MAPPING = {
     'en': 'en', 'es': 'es', 'fr': 'fr', 'de': 'de', 'it': 'it',
@@ -853,7 +856,7 @@ def health():
 @app.route('/api/analyze-interview', methods=['POST'])
 def analyze_interview():
     """
-    Analyze completed interview and generate comprehensive report
+    Analyze completed interview and send results to NestJS backend
     Expected payload:
     {
       "session_id": "...",
@@ -863,14 +866,20 @@ def analyze_interview():
       "duration_seconds": 600
     }
     """
-
-# ========== INTERVIEW ANALYSIS ENDPOINT ==========
-def analyze_interview_with_ai(session_id, user_details, offer_details):
-    """
-    Use Gemini AI to comprehensively analyze an interview session
-    """
     try:
-        # Get full conversation history
+        data = request.json
+        session_id = data.get('session_id')
+        chat_id = data.get('chat_id')
+        user_details = data.get('user_details', {})
+        offer_details = data.get('offer_details', {})
+        duration_seconds = data.get('duration_seconds', 600)
+
+        if not session_id or not chat_id:
+            return jsonify({"success": False, "error": "Missing required fields"}), 400
+
+        print(f"📊 Analyzing interview - Session: {session_id}, Chat: {chat_id}")
+
+        # Get conversation history
         conn = sqlite3.connect(DATABASE_FILE)
         c = conn.cursor()
         c.execute(
@@ -881,12 +890,15 @@ def analyze_interview_with_ai(session_id, user_details, offer_details):
         conn.close()
 
         if not history or len(history) < 2:
-            return {
-                "error": "Insufficient interview data",
-                "completion_percentage": 0
-            }
+            return jsonify({
+                "success": False,
+                "error": "Insufficient interview data"
+            }), 400
 
-        # Build analysis prompt for Gemini
+        # Calculate completion percentage
+        completion_percentage = min(100, int((len(history) / 5) * 100))
+
+        # Build analysis prompt
         candidate_name = user_details.get('name', 'Candidate')
         position = offer_details.get('position', 'Position')
 
@@ -904,7 +916,6 @@ INTERVIEW TRANSCRIPT:
 Provide a detailed analysis in JSON format:
 {
   "overall_score": <0-100>,
-  "completion_percentage": <percentage of 5 questions answered>,
   "strengths": ["strength1", "strength2", "strength3"],
   "weaknesses": ["weakness1", "weakness2"],
   "question_analysis": [
@@ -919,13 +930,14 @@ Provide a detailed analysis in JSON format:
   "summary": "2-3 sentence overall assessment"
 }
 Be specific, constructive, and professional."""
-        # Call Gemini
+
+        # Call Gemini AI
         if not gemini_clients:
-            return {"error": "AI service not available"}
+            return jsonify({"success": False, "error": "AI service not available"}), 500
 
         key_name = get_random_key()
         if not key_name:
-            return {"error": "No AI keys available"}
+            return jsonify({"success": False, "error": "No AI keys available"}), 500
 
         client = gemini_clients[key_name]
 
@@ -937,7 +949,7 @@ Be specific, constructive, and professional."""
 
         result_text = response.text.strip() if hasattr(response, 'text') else ""
 
-        # Clean JSON
+        # Parse JSON response
         if "```json" in result_text:
             result_text = result_text.replace('```json', '').replace('```', '').strip()
 
@@ -946,87 +958,41 @@ Be specific, constructive, and professional."""
         # Add metadata
         analysis['candidate_name'] = candidate_name
         analysis['position'] = position
+        analysis['completion_percentage'] = completion_percentage
         analysis['interview_duration'] = f"{len(history)} exchanges"
 
-        return analysis
+        print(f"✅ Analysis complete - Score: {analysis.get('overall_score', 0)}, Recommendation: {analysis.get('recommendation', 'N/A')}")
 
-    except Exception as e:
-        print(f"❌ Analysis error: {e}")
-        return {
-            "error": str(e),
-            "overall_score": 0,
-            "completion_percentage": 0
-        }
+        # Send to NestJS backend
+        message_sent = False
+        try:
+            nestjs_response = requests.post(
+                f"{NESTJS_BACKEND_URL}/chat/interview-result",
+                json={
+                    "chat_id": chat_id,
+                    "analysis": analysis,
+                    "session_id": session_id
+                },
+                timeout=10
+            )
 
-@app.route('/api/analyze-interview', methods=['POST'])
-def analyze_interview_endpoint():
-    """
-    Analyze completed interview and send results to enterprise
-    """
-    try:
-        data = request.json
-        session_id = data.get('session_id')
-        chat_id = data.get('chat_id')
-        user_details = data.get('user_details', {})
-        offer_details = data.get('offer_details', {})
-        duration_seconds = data.get('duration_seconds', 600)
+            if nestjs_response.status_code in [200, 201]:
+                print(f"✅ Interview result saved to NestJS backend")
+                message_sent = True
+            else:
+                print(f"⚠️ NestJS save failed with status {nestjs_response.status_code}: {nestjs_response.text}")
+                message_sent = False
 
-        if not session_id or not chat_id:
-            return jsonify({"success": False, "error": "Missing required fields"}), 400
+        except requests.exceptions.RequestException as nest_error:
+            print(f"⚠️ Could not send to NestJS: {nest_error}")
+            message_sent = False
 
-        print(f"📊 Analyzing interview - Session: {session_id}, Chat: {chat_id}")
-
-        # Run AI analysis
-        analysis = analyze_interview_with_ai(session_id, user_details, offer_details)
-
-        if "error" in analysis:
-            return jsonify({
-                "success": False,
-                "error": analysis["error"]
-            }), 500
-
-        # Format results message
-        duration_min = duration_seconds // 60
-        duration_sec = duration_seconds % 60
-
-        recommendation_emoji = {
-            "STRONG_HIRE": "🌟",
-            "HIRE": "✅",
-            "MAYBE": "🤔",
-            "NO_HIRE": "❌"
-        }.get(analysis.get('recommendation', 'MAYBE'), "📊")
-
-        message_content = f"""📊 **Interview Results - {analysis['candidate_name']}**
-**Position:** {analysis['position']}
-**Completion:** {analysis.get('completion_percentage', 100)}%
-**Duration:** {duration_min}:{duration_sec:02d}
-**Overall Score:** {analysis['overall_score']}/100
-✅ **STRENGTHS:**
-"""
-        for strength in analysis.get('strengths', []):
-            message_content += f"• {strength}\n"
-
-        message_content += "\n⚠️ **AREAS FOR IMPROVEMENT:**\n"
-        for weakness in analysis.get('weaknesses', []):
-            message_content += f"• {weakness}\n"
-
-        message_content += "\n📝 **DETAILED FEEDBACK:**\n"
-        for qa in analysis.get('question_analysis', [])[:5]:
-            message_content += f"\n**Q:** {qa['question'][:80]}...\n"
-            message_content += f"**Score:** {qa['score']}/10\n"
-            message_content += f"**Feedback:** {qa['feedback']}\n"
-
-        message_content += f"\n{recommendation_emoji} **RECOMMENDATION:** {analysis['recommendation']}\n"
-        message_content += f"\n{analysis['summary']}"
-
-        print(f"✅ Analysis complete - Score: {analysis['overall_score']}, Recommendation: {analysis['recommendation']}")
-
-        # Return analysis (Android will handle sending to chat for now)
+        # Return analysis
         return jsonify({
             "success": True,
             "analysis": analysis,
-            "formatted_message": message_content,
-            "message_sent": False  # TODO: Implement backend message sending
+            "message_sent": message_sent,
+            "nestjs_backend": NESTJS_BACKEND_URL
         })
 
     except Exception as e:
@@ -1036,10 +1002,11 @@ def analyze_interview_endpoint():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     print(f"🚀 Starting Talleb 5edma - Interview Coaching")
     print(f"🚀 Port: {port}")
     print(f"🔑 Active Keys: {len(gemini_clients)}")
-    print(f"🧠 Features: Text + Voice Chat + WebSocket + Interview Invitations + Structured Interview + Interview Analysis")
+    print(f"🧠 Features: Text + Voice Chat + WebSocket + Interview Invitations + Structured Interview")
     socketio.run(app, host='0.0.0.0', port=port, debug=False, allow_unsafe_werkzeug=True)
