@@ -15,16 +15,20 @@ import random
 app = Flask(__name__)
 CORS(app)
 
-# ========== WEBSOCKET SETUP (No monkey patching needed for production) ==========
+# ========== WEBSOCKET SETUP (Production-ready) ==========
 
 socketio = SocketIO(
     app,
     cors_allowed_origins="*",
-    async_mode='threading',  # Use threading instead of gevent for production
+    async_mode='threading',
     ping_timeout=60,
     ping_interval=25,
     engineio_logger=False,
-    socketio_logger=False
+    socketio_logger=False,
+    # ⭐ FIX: Add these for production compatibility
+    logger=False,
+    always_connect=True,
+    manage_session=False
 )
 
 # Track connected users
@@ -61,8 +65,12 @@ else:
 
 # ========== DATABASE ==========
 
+# ⭐ FIX: Register datetime adapter for Python 3.13+
+sqlite3.register_adapter(datetime, lambda val: val.isoformat())
+sqlite3.register_converter("DATETIME", lambda val: datetime.fromisoformat(val.decode()))
+
 def init_db():
-    conn = sqlite3.connect(DATABASE_FILE)
+    conn = sqlite3.connect(DATABASE_FILE, detect_types=sqlite3.PARSE_DECLTYPES)
     c = conn.cursor()
 
     c.execute('''CREATE TABLE IF NOT EXISTS conversations
@@ -84,7 +92,6 @@ def init_db():
                   responded_at DATETIME,
                   UNIQUE(chat_id, from_user_id, to_user_id))''')
 
-    # ⭐ New table to track interview sessions / progress
     c.execute('''CREATE TABLE IF NOT EXISTS interview_sessions
                  (session_id TEXT PRIMARY KEY,
                   current_question INTEGER DEFAULT 0,
@@ -157,6 +164,12 @@ def on_ping():
     """Heartbeat"""
     emit('pong')
 
+# ⭐ NEW: Error handler for WebSocket
+@socketio.on_error_default
+def default_error_handler(e):
+    print(f"❌ WebSocket error: {e}")
+    return False
+
 # ========== HELPER FUNCTIONS ==========
 
 def get_random_key():
@@ -200,7 +213,7 @@ def detect_language_from_text(text):
 
 def save_conversation(session_id, user_input, ai_response, language='en'):
     try:
-        conn = sqlite3.connect(DATABASE_FILE)
+        conn = sqlite3.connect(DATABASE_FILE, detect_types=sqlite3.PARSE_DECLTYPES)
         c = conn.cursor()
         c.execute(
             "INSERT INTO conversations VALUES (?, ?, ?, ?, ?)",
@@ -213,7 +226,7 @@ def save_conversation(session_id, user_input, ai_response, language='en'):
 
 def get_conversation_history(session_id, limit=10):
     try:
-        conn = sqlite3.connect(DATABASE_FILE)
+        conn = sqlite3.connect(DATABASE_FILE, detect_types=sqlite3.PARSE_DECLTYPES)
         c = conn.cursor()
         c.execute(
             "SELECT user_input, ai_response FROM conversations "
@@ -227,17 +240,15 @@ def get_conversation_history(session_id, limit=10):
         print(f"Database error: {e}")
         return []
 
-# ⭐ Interview session helpers
-
 def get_or_create_interview_session(session_id):
-    conn = sqlite3.connect(DATABASE_FILE)
+    conn = sqlite3.connect(DATABASE_FILE, detect_types=sqlite3.PARSE_DECLTYPES)
     c = conn.cursor()
     c.execute("SELECT session_id, current_question, status FROM interview_sessions WHERE session_id=?",
               (session_id,))
     row = c.fetchone()
     if row:
         conn.close()
-        return row[1], row[2]  # current_question, status
+        return row[1], row[2]
 
     c.execute(
         "INSERT INTO interview_sessions (session_id, current_question, status, started_at) "
@@ -249,7 +260,7 @@ def get_or_create_interview_session(session_id):
     return 0, 'in_progress'
 
 def update_interview_session_progress(session_id, current_question, status=None):
-    conn = sqlite3.connect(DATABASE_FILE)
+    conn = sqlite3.connect(DATABASE_FILE, detect_types=sqlite3.PARSE_DECLTYPES)
     c = conn.cursor()
     if status and status == 'completed':
         c.execute(
@@ -269,7 +280,7 @@ def update_interview_session_progress(session_id, current_question, status=None)
 def save_interview_invitation(chat_id, from_user_id, to_user_id, from_user_name, offer_id):
     """Save or update an interview invitation"""
     try:
-        conn = sqlite3.connect(DATABASE_FILE)
+        conn = sqlite3.connect(DATABASE_FILE, detect_types=sqlite3.PARSE_DECLTYPES)
         c = conn.cursor()
 
         c.execute('''SELECT id, status FROM interview_invitations
@@ -301,7 +312,7 @@ def save_interview_invitation(chat_id, from_user_id, to_user_id, from_user_name,
 def get_pending_invitations(user_id):
     """Get all pending invitations for a user"""
     try:
-        conn = sqlite3.connect(DATABASE_FILE)
+        conn = sqlite3.connect(DATABASE_FILE, detect_types=sqlite3.PARSE_DECLTYPES)
         c = conn.cursor()
         c.execute('''SELECT id, chat_id, from_user_id, from_user_name,
                             offer_id, created_at
@@ -318,7 +329,7 @@ def get_pending_invitations(user_id):
             "from_user_id": inv[2],
             "from_user_name": inv[3],
             "offer_id": inv[4],
-            "created_at": inv[5]
+            "created_at": str(inv[5]) if inv[5] else None
         } for inv in invitations]
     except Exception as e:
         print(f"❌ Error getting invitations: {e}")
@@ -327,7 +338,7 @@ def get_pending_invitations(user_id):
 def update_invitation_status(invitation_id, status):
     """Update invitation status (accepted/rejected)"""
     try:
-        conn = sqlite3.connect(DATABASE_FILE)
+        conn = sqlite3.connect(DATABASE_FILE, detect_types=sqlite3.PARSE_DECLTYPES)
         c = conn.cursor()
         c.execute('''UPDATE interview_invitations
                      SET status=?, responded_at=?
@@ -343,7 +354,7 @@ def update_invitation_status(invitation_id, status):
 def get_invitation_by_id(invitation_id):
     """Get invitation details by ID"""
     try:
-        conn = sqlite3.connect(DATABASE_FILE)
+        conn = sqlite3.connect(DATABASE_FILE, detect_types=sqlite3.PARSE_DECLTYPES)
         c = conn.cursor()
         c.execute('''SELECT id, chat_id, from_user_id, to_user_id,
                             from_user_name, offer_id, status,
@@ -362,8 +373,8 @@ def get_invitation_by_id(invitation_id):
                 "from_user_name": inv[4],
                 "offer_id": inv[5],
                 "status": inv[6],
-                "created_at": inv[7],
-                "responded_at": inv[8]
+                "created_at": str(inv[7]) if inv[7] else None,
+                "responded_at": str(inv[8]) if inv[8] else None
             }
         return None
     except Exception as e:
@@ -418,19 +429,14 @@ CONVERSATION HISTORY (Remember this context):
 
     return base_prompt
 
-# ⭐ More professional employer interview prompt with 5 ordered questions
 def build_employer_interview_prompt(user_details, offer_details, chat_history, current_question_index=0):
     """
-    Professional structured mock interview:
-    - 5 must-ask questions in order
-    - Active listening (brief reaction) + next question
+    Professional structured mock interview with 5 ordered questions and active listening
     """
-
     position_title = offer_details.get('position', 'this position')
     required_skills = offer_details.get('required_skills', [])
     main_skill = required_skills[0] if isinstance(required_skills, list) and required_skills else "your key skills"
 
-    # Define the 5 must-ask questions in order
     must_ask_questions = [
         f"To start, could you please tell me about yourself and why you are interested in {position_title}?",
         f"Can you describe a challenging project where you used {main_skill}? Please use the STAR method: Situation, Task, Action, Result.",
@@ -439,7 +445,6 @@ def build_employer_interview_prompt(user_details, offer_details, chat_history, c
         "Where do you see yourself in the next 3–5 years, and how does this role fit into your career goals?"
     ]
 
-    # Clamp index
     idx = max(0, min(current_question_index, len(must_ask_questions) - 1))
 
     prompt = f"""You are a professional hiring manager conducting a STRUCTURED MOCK INTERVIEW for "Talleb 5edma".
@@ -556,7 +561,6 @@ def get_ai_response(text, user_details, offer_details, chat_history, mode, langu
             client = gemini_clients[key_name]
 
             if mode == 'employer_interview':
-                # ⭐ Use structured 5-question logic with progress
                 current_q, status = get_or_create_interview_session(session_id or "default")
                 system_prompt = build_employer_interview_prompt(
                     user_details,
@@ -580,7 +584,6 @@ def get_ai_response(text, user_details, offer_details, chat_history, mode, langu
             if ai_text:
                 print(f"✅ Response from {key_name.upper()}")
 
-                # ⭐ Advance question index for interview mode
                 if mode == 'employer_interview':
                     new_q = current_q + 1
                     if new_q >= 5:
@@ -759,7 +762,6 @@ def send_interview_invitation():
             invitation_id = result["invitation_id"]
             invitation = get_invitation_by_id(invitation_id)
 
-            # ✨ EMIT WEBSOCKET EVENT
             socketio.emit('invitation_received', {
                 'invitation_id': invitation_id,
                 'chat_id': chat_id,
@@ -853,18 +855,9 @@ def reject_interview_invitation():
         print(f"❌ Reject Error: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
-# ========== INTERVIEW FEEDBACK ENDPOINT (NEW) ==========
-
 @app.route('/api/interview-feedback', methods=['POST'])
 def get_interview_feedback():
-    """
-    Generate structured feedback after an interview session:
-    - Overall performance
-    - Strengths
-    - Areas for improvement
-    - Specific tips
-    - Next steps
-    """
+    """Generate structured feedback after interview"""
     try:
         data = request.json
         session_id = data.get('session_id')
@@ -875,7 +868,7 @@ def get_interview_feedback():
         chat_history = get_conversation_history(session_id, limit=30)
 
         if not chat_history:
-            return jsonify({"success": False, "error": "No conversation found for this session"}), 404
+            return jsonify({"success": False, "error": "No conversation found"}), 404
 
         formatted_history = "\n\n".join(
             [f"Q: {ai}\nA: {user}" for (user, ai) in chat_history]
@@ -883,17 +876,17 @@ def get_interview_feedback():
 
         feedback_prompt = f"""You are an experienced hiring manager and interview coach.
 
-Review this MOCK INTERVIEW conversation and provide clear, structured feedback to help the candidate improve:
+Review this MOCK INTERVIEW conversation and provide clear, structured feedback:
 
 CONVERSATION:
 {formatted_history}
 
-Please provide the feedback in this structure:
-1) Overall Performance (score from 1 to 10 with a short explanation)
-2) Main Strengths (2–3 bullet points)
-3) Key Areas for Improvement (2–3 bullet points)
-4) Concrete Tips (short, actionable suggestions)
-5) Suggested Next Practice Steps (what they should practice next)
+Provide feedback in this structure:
+1) Overall Performance (score 1-10 with explanation)
+2) Main Strengths (2-3 bullet points)
+3) Key Areas for Improvement (2-3 bullet points)
+4) Concrete Tips (actionable suggestions)
+5) Suggested Next Practice Steps
 
 Keep the tone encouraging, direct, and practical."""
 
@@ -919,8 +912,6 @@ Keep the tone encouraging, direct, and practical."""
     except Exception as e:
         print(f"❌ Feedback Error: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
-
-# ========== STATUS ENDPOINTS ==========
 
 @app.route('/api/quota-status', methods=['GET'])
 def quota_status():
@@ -963,12 +954,10 @@ def health():
         "keys_configured": len(gemini_clients)
     })
 
-# ========== MAIN ==========
-
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
+    port = int(os.environ.get('PORT', 10000))
     print("🚀 Starting Talleb 5edma - Interview Coaching")
     print(f"🚀 Port: {port}")
     print(f"🔑 Active Keys: {len(gemini_clients)}")
-    print("🧠 Features: Text + Voice Chat + WebSocket + Interview Invitations + Structured Interview + Feedback")
+    print("🧠 Features: Text + Voice + WebSocket + Invitations + Structured Interview + Feedback")
     socketio.run(app, host='0.0.0.0', port=port, debug=False, allow_unsafe_werkzeug=True)
