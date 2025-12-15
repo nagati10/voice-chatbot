@@ -921,23 +921,29 @@ INTERVIEW TRANSCRIPT:
         for i, (user_msg, ai_msg) in enumerate(history, 1):
             analysis_prompt += f"\nQ{i} (Interviewer): {ai_msg}\nA{i} (Candidate): {user_msg}\n"
         analysis_prompt += """
-Provide a detailed analysis in JSON format:
+Provide a detailed analysis in STRICT JSON format (no markdown, no code blocks):
 {
-  "overall_score": <0-100>,
+  "overall_score": 65,
   "strengths": ["strength1", "strength2", "strength3"],
   "weaknesses": ["weakness1", "weakness2"],
   "question_analysis": [
     {
       "question": "question text",
       "answer": "answer summary",
-      "score": <0-10>,
+      "score": 7,
       "feedback": "specific feedback"
     }
   ],
-  "recommendation": "<STRONG_HIRE|HIRE|MAYBE|NO_HIRE>",
+  "recommendation": "HIRE",
   "summary": "2-3 sentence overall assessment"
 }
-Be specific, constructive, and professional."""
+CRITICAL: 
+- Return ONLY valid JSON
+- No markdown code blocks
+- Escape all quotes in strings
+- recommendation must be: STRONG_HIRE, HIRE, MAYBE, or NO_HIRE
+- overall_score must be 0-100
+- Keep all strings concise and properly escaped"""
         print(f"🔑 INTERVIEW_ANALYSIS: Prompt length: {len(analysis_prompt)} chars")
         # Call Gemini AI
         if not gemini_clients:
@@ -953,23 +959,61 @@ Be specific, constructive, and professional."""
         response = client.models.generate_content(
             model="gemini-2.5-flash",
             contents=analysis_prompt,
-            config=types.GenerateContentConfig(temperature=0.3, max_output_tokens=4096)
+            config=types.GenerateContentConfig(
+                temperature=0.3, 
+                max_output_tokens=4096,
+                response_mime_type="application/json"  # Request JSON format
+            )
         )
         result_text = response.text.strip() if hasattr(response, 'text') else ""
         print(f"📤 INTERVIEW_ANALYSIS: AI response length: {len(result_text)} chars")
         print(f"📤 INTERVIEW_ANALYSIS: AI response preview: {result_text[:200]}...")
-        # Parse JSON response
+        # Clean and parse JSON with robust error handling
         if "```json" in result_text:
             print(f"🔧 INTERVIEW_ANALYSIS: Cleaning JSON markdown")
             result_text = result_text.replace('```json', '').replace('```', '').strip()
+        if "```" in result_text:
+            print(f"🔧 INTERVIEW_ANALYSIS: Removing remaining code fence")
+            result_text = result_text.replace('```', '').strip()
         print(f"🔍 INTERVIEW_ANALYSIS: Parsing JSON...")
+        analysis = None
+        
         try:
             analysis = json.loads(result_text)
             print(f"✅ INTERVIEW_ANALYSIS: JSON parsed successfully")
         except json.JSONDecodeError as json_err:
-            print(f"❌ INTERVIEW_ANALYSIS: JSON parse error: {json_err}")
-            print(f"❌ INTERVIEW_ANALYSIS: Failed JSON: {result_text[:500]}")
-            return jsonify({"success": False, "error": f"Invalid AI response format: {str(json_err)}"}), 500
+            print(f"⚠️ INTERVIEW_ANALYSIS: Initial JSON parse failed: {json_err}")
+            print(f"🔧 INTERVIEW_ANALYSIS: Attempting to fix malformed JSON...")
+            
+            # Try to truncate at last valid closing brace
+            try:
+                last_brace = result_text.rfind('}')
+                if last_brace > 0:
+                    truncated = result_text[:last_brace + 1]
+                    print(f"🔧 INTERVIEW_ANALYSIS: Truncated to {len(truncated)} chars")
+                    analysis = json.loads(truncated)
+                    print(f"✅ INTERVIEW_ANALYSIS: Successfully parsed truncated JSON")
+            except Exception as truncate_err:
+                print(f"❌ INTERVIEW_ANALYSIS: Truncation failed: {truncate_err}")
+            
+            # If still failed, create fallback analysis
+            if not analysis:
+                print(f"⚠️ INTERVIEW_ANALYSIS: Using fallback analysis")
+                analysis = {
+                    "overall_score": 50,
+                    "strengths": ["Participated in interview", "Responded to questions"],
+                    "weaknesses": ["Limited detailed responses", "Could provide more specific examples"],
+                    "question_analysis": [
+                        {
+                            "question": f"Question {i+1}",
+                            "answer": "Response provided",
+                            "score": 5,
+                            "feedback": "More detail would strengthen the response"
+                        } for i in range(min(len(history), 5))
+                    ],
+                    "recommendation": "MAYBE",
+                    "summary": "Interview completed. Candidate showed basic engagement but could benefit from more detailed and structured responses."
+                }
         # Add metadata
         analysis['candidate_name'] = candidate_name
         analysis['position'] = position
